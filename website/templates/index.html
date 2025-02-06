@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Assisted Portfolio Manager</title>
+</head>
+<body>
+    <h1>AI Assisted Portfolio Manager</h1>
+    <button onclick="console.log('Wallet Connected!')">Connect Wallet</button>
+    
+    <h2>Deposit Tokens</h2>
+    <select id="tokenDeposit">
+        <option value="usdc">USDC</option>
+        <option value="weth">WETH</option>
+    </select>
+    <input type="number" id="depositAmount" placeholder="Amount"/>
+    <button onclick="console.log('Deposit Clicked!')">Deposit</button>
+    
+    <h2>Withdraw Tokens</h2>
+    <select id="tokenWithdraw">
+        <option value="usdc">USDC</option>
+        <option value="weth">WETH</option>
+    </select>
+    <input type="number" id="withdrawAmount" placeholder="Amount"/>
+    <button onclick="console.log('Withdraw Clicked!')">Withdraw</button>
+    
+    <h2>Current Balances</h2>
+    <button onclick="console.log('Fetch Balances Clicked!')">Refresh Balances</button>
+    
+    <h2>Agent Reports</h2>
+    <button onclick="console.log('Fetch Reports Clicked!')">Fetch Reports</button>
+</body>
+</html>
