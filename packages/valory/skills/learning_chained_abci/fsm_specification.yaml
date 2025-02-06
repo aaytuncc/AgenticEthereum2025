@@ -24,10 +24,10 @@ start_states:
 - RegistrationRound
 - RegistrationStartupRound
 states:
+- DataPullRound
 - CheckLateTxHashesRound
 - CheckTransactionHistoryRound
 - CollectSignatureRound
-- DataPullRound
 - DecisionMakingRound
 - FinalizationRound
 - RandomnessTransactionSubmissionRound
@@ -42,6 +42,9 @@ states:
 - TxPreparationRound
 - ValidateTransactionRound
 transition_func:
+    (DataPullRound, DONE): DecisionMakingRound
+    (DataPullRound, NO_MAJORITY): DataPullRound
+    (DataPullRound, ROUND_TIMEOUT): DataPullRound
     (CheckLateTxHashesRound, CHECK_LATE_ARRIVING_MESSAGE): SynchronizeLateMessagesRound
     (CheckLateTxHashesRound, CHECK_TIMEOUT): CheckLateTxHashesRound
     (CheckLateTxHashesRound, DONE): ResetAndPauseRound
@@ -57,9 +60,6 @@ transition_func:
     (CollectSignatureRound, DONE): FinalizationRound
     (CollectSignatureRound, NO_MAJORITY): ResetRound
     (CollectSignatureRound, ROUND_TIMEOUT): CollectSignatureRound
-    (DataPullRound, DONE): DecisionMakingRound
-    (DataPullRound, NO_MAJORITY): DataPullRound
-    (DataPullRound, ROUND_TIMEOUT): DataPullRound
     (DecisionMakingRound, DONE): ResetAndPauseRound
     (DecisionMakingRound, ERROR): ResetAndPauseRound
     (DecisionMakingRound, NO_MAJORITY): DecisionMakingRound
@@ -72,7 +72,6 @@ transition_func:
     (FinalizationRound, FINALIZE_TIMEOUT): SelectKeeperTransactionSubmissionBAfterTimeoutRound
     (FinalizationRound, INSUFFICIENT_FUNDS): SelectKeeperTransactionSubmissionBRound
     (RandomnessTransactionSubmissionRound, DONE): SelectKeeperTransactionSubmissionARound
-    (RandomnessTransactionSubmissionRound, NONE): RandomnessTransactionSubmissionRound
     (RandomnessTransactionSubmissionRound, NO_MAJORITY): RandomnessTransactionSubmissionRound
     (RandomnessTransactionSubmissionRound, ROUND_TIMEOUT): RandomnessTransactionSubmissionRound
     (RegistrationRound, DONE): DataPullRound

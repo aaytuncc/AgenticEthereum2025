@@ -20,27 +20,37 @@
 """This module contains the transaction payloads of the LearningAbciApp."""
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 from packages.valory.skills.abstract_round_abci.base import BaseTxPayload
+
+@dataclass(frozen=True)
+class ApiSelectionPayload(BaseTxPayload):
+    """Represent a transaction payload for the ApiSelectionRound."""
+
+    api_selection: str
 
 
 @dataclass(frozen=True)
 class DataPullPayload(BaseTxPayload):
     """Represent a transaction payload for the DataPullRound."""
 
-    price: Optional[float]
-    price_ipfs_hash: Optional[str]
-    native_balance: Optional[float]
-    erc20_balance: Optional[float]
+    token_values: Optional[str]  # Store as JSON string for hashability
+    total_portfolio_value: Optional[float]
 
+@dataclass(frozen=True)
+class AlternativeDataPullPayload(BaseTxPayload):
+    """Represent a transaction payload for the AlternativeDataPullRound."""
+
+    token_values: Optional[str]  # Store as JSON string for hashability
+    total_portfolio_value: Optional[float]
 
 @dataclass(frozen=True)
 class DecisionMakingPayload(BaseTxPayload):
     """Represent a transaction payload for the DecisionMakingRound."""
 
     event: str
-
+    adjustment_balances: Optional[str] # Store as JSON string for hashability
 
 @dataclass(frozen=True)
 class TxPreparationPayload(BaseTxPayload):

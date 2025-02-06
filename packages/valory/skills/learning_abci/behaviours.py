@@ -23,9 +23,13 @@ import json
 from abc import ABC
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import Dict, Generator, Optional, Set, Type, cast
+from typing import Union, Tuple, Dict, Generator, Optional, Set, Type, cast
+from datetime import datetime
 
 from packages.valory.contracts.erc20.contract import ERC20
+from packages.valory.contracts.mock_dex.contract import MOCKDEX
+
+
 from packages.valory.contracts.gnosis_safe.contract import (
     GnosisSafeContract,
     SafeOperation,
@@ -44,15 +48,20 @@ from packages.valory.skills.abstract_round_abci.behaviours import (
 from packages.valory.skills.abstract_round_abci.io_.store import SupportedFiletype
 from packages.valory.skills.learning_abci.models import (
     CoingeckoSpecs,
+    CoinMarketCapSpecs,
     Params,
     SharedState,
 )
 from packages.valory.skills.learning_abci.payloads import (
+    ApiSelectionPayload,
+    AlternativeDataPullPayload,
     DataPullPayload,
     DecisionMakingPayload,
     TxPreparationPayload,
 )
 from packages.valory.skills.learning_abci.rounds import (
+    ApiSelectionRound,
+    AlternativeDataPullRound,
     DataPullRound,
     DecisionMakingRound,
     Event,
@@ -70,12 +79,12 @@ from packages.valory.skills.transaction_settlement_abci.rounds import TX_HASH_LE
 ZERO_VALUE = 0
 HTTP_OK = 200
 GNOSIS_CHAIN_ID = "gnosis"
+ETHEREUM_CHAIN_ID = "ethereum"
 EMPTY_CALL_DATA = b"0x"
 SAFE_GAS = 0
 VALUE_KEY = "value"
 TO_ADDRESS_KEY = "to_address"
 METADATA_FILENAME = "metadata.json"
-
 
 class LearningBaseBehaviour(BaseBehaviour, ABC):  # pylint: disable=too-many-ancestors
     """Base behaviour for the learning_abci behaviours."""
@@ -101,6 +110,11 @@ class LearningBaseBehaviour(BaseBehaviour, ABC):  # pylint: disable=too-many-anc
         return self.context.coingecko_specs
 
     @property
+    def coinmarketcap_specs(self) -> CoinMarketCapSpecs:
+        """Get the CoinMarketCap api specs."""
+        return self.context.coinmarketcap_specs
+
+    @property
     def metadata_filepath(self) -> str:
         """Get the temporary filepath to the metadata."""
         return str(Path(mkdtemp()) / METADATA_FILENAME)
@@ -114,8 +128,37 @@ class LearningBaseBehaviour(BaseBehaviour, ABC):  # pylint: disable=too-many-anc
         return now
 
 
+class ApiSelectionBehaviour(
+    LearningBaseBehaviour
+):  # pylint: disable=too-many-ancestors
+    """ApiSelectionBehaviour
+    A behavior for selecting an API source, determining whether to use "coingecko" or "coinmarketcap" based on parameters, and submitting the decision.
+
+    Sets api_selection to "coingecko" by default, or "coinmarketcap" if specified in parameters.
+    """
+
+    matching_round: Type[AbstractRound] = ApiSelectionRound
+
+    def async_act(self) -> Generator:
+        """Do the act, supporting asynchronous execution."""
+
+        with self.context.benchmark_tool.measure(self.behaviour_id).local():
+            sender = self.context.agent_address
+
+            selection = self.params.api_selection_string
+            api_selection = "coingecko"
+            if selection == "coinmarketcap":
+                api_selection = selection
+
+            payload = ApiSelectionPayload(sender=sender, api_selection=api_selection)
+        with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
+            yield from self.send_a2a_transaction(payload)
+            yield from self.wait_until_round_end()
+
+        self.set_done()
+
 class DataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=too-many-ancestors
-    """This behaviours pulls token prices from API endpoints and reads the native balance of an account"""
+    """This behaviours pulls token prices from API endpoints """
 
     matching_round: Type[AbstractRound] = DataPullRound
 
@@ -125,30 +168,20 @@ class DataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=too-many-ance
         with self.context.benchmark_tool.measure(self.behaviour_id).local():
             sender = self.context.agent_address
 
-            # First method to call an API: simple call to get_http_response
-            price = yield from self.get_token_price_simple()
+            token_values, total_portfolio_value = yield from self.calculate_portfolio_allocation()
+            self.context.logger.info(f"Token values: {token_values}")
+            self.context.logger.info(f"Total portfolio value: {total_portfolio_value}")
 
-            # Second method to call an API: use ApiSpecs
-            # This call replaces the previous price, it is just an example
-            price = yield from self.get_token_price_specs()
+            # Convert token values to JSON, dict is not hashable causing problems
+            token_values_json = json.dumps(token_values, sort_keys=True) if token_values else None
+            self.context.logger.info(f"Token values JSON: {token_values_json}")
 
-            # Store the price in IPFS
-            price_ipfs_hash = yield from self.send_price_to_ipfs(price)
-
-            # Get the native balance
-            native_balance = yield from self.get_native_balance()
-
-            # Get the token balance
-            erc20_balance = yield from self.get_erc20_balance()
 
             # Prepare the payload to be shared with other agents
-            # After consensus, all the agents will have the same price, price_ipfs_hash and balance variables in their synchronized data
             payload = DataPullPayload(
                 sender=sender,
-                price=price,
-                price_ipfs_hash=price_ipfs_hash,
-                native_balance=native_balance,
-                erc20_balance=erc20_balance,
+                token_values=token_values_json,
+                total_portfolio_value=total_portfolio_value,
             )
 
         # Send the payload to all agents and mark the behaviour as done
@@ -158,126 +191,347 @@ class DataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=too-many-ance
 
         self.set_done()
 
-    def get_token_price_simple(self) -> Generator[None, None, Optional[float]]:
-        """Get token price from Coingecko usinga simple HTTP request"""
-
-        # Prepare the url and the headers
-        url_template = self.params.coingecko_price_template
-        url = url_template.replace("{api_key}", self.params.coingecko_api_key)
-        headers = {"accept": "application/json"}
-
-        # Make the HTTP request to Coingecko API
-        response = yield from self.get_http_response(
-            method="GET", url=url, headers=headers
-        )
-
-        # Handle HTTP errors
-        if response.status_code != HTTP_OK:
-            self.context.logger.error(
-                f"Error while pulling the price from CoinGecko: {response.body}"
-            )
-
-        # Load the response
-        api_data = json.loads(response.body)
-        price = api_data["autonolas"]["usd"]
-
-        self.context.logger.info(f"Got token price from Coingecko: {price}")
-
-        return price
-
-    def get_token_price_specs(self) -> Generator[None, None, Optional[float]]:
+    def get_token_price_specs(self, symbol) -> Generator[None, None, Optional[float]]:
         """Get token price from Coingecko using ApiSpecs"""
 
+        # Get a copy of the specs and update based on the symbol
+        specs = self.coingecko_specs.get_spec()  # Get a dictionary instead of assuming a specs attribute
+        if symbol == "ETH":
+            specs["parameters"]["ids"] = "ethereum"
+            response_key = "ethereum"
+        elif symbol == "USDC":
+            specs["parameters"]["ids"] = "usd-coin"
+            response_key = "usd-coin"
+        else:
+            self.context.logger.error(f"Unsupported token symbol: {symbol}")
+            return None
+
+        # Make the HTTP request without modifying self.coingecko_specs directly
+        raw_response = yield from self.get_http_response(**specs)
+
+        # Process the response using response_key
+        response = self.coingecko_specs.process_response(raw_response)
+        price = response.get(response_key, {}).get("usd", None)
+        
+        self.context.logger.info(f"Got token price from Coingecko: {price}")
+        return price
+ 
+    def get_token_balances(self) -> Generator[None, None, Optional[Dict[str, float]]]:
+        """
+        Get balances for each specified token from the deployed contract using parameters from self.params.
+
+        :return: Dictionary of token balances, or None if an error occurs.
+        """
+        self.context.logger.info("Starting to fetch token balances for the portfolio.")
+
+        # Retrieve portfolio address and tokens to rebalance from params
+        portfolio_address = self.params.portfolio_address_string
+        mock_contract_address = self.params.mock_contract_address_string
+
+        tokens_to_rebalance = self.params.tokens_to_rebalance
+
+        # Log the portfolio details and tokens
+        self.context.logger.info(f"Portfolio Address: {portfolio_address}")
+        self.context.logger.info(f"Tokens to Rebalance: {tokens_to_rebalance}")
+
+        balances = {}
+        for token_symbol in tokens_to_rebalance:
+            self.context.logger.info(f"Fetching balance for token: {token_symbol}")
+
+            # Call the contract API to get the token balance for the portfolio
+            response_msg = yield from self.get_contract_api_response(
+                performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
+                contract_address=mock_contract_address,  # Portfolio contract address
+                contract_id=str(MOCKDEX.contract_id),  # Contract ID for the deployed contract
+                contract_callable="getBalance",
+                user=portfolio_address, 
+                token=token_symbol,
+                chain_id=ETHEREUM_CHAIN_ID,  # Replace with the appropriate chain ID
+            )
+
+            # Check if the response contains the expected balance data
+            if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
+                self.context.logger.error(f"Error retrieving balance for {token_symbol}: {response_msg}")
+                balances[token_symbol] = None
+                continue
+
+            # Extract balance from the response
+            balance = response_msg.raw_transaction.body.get("balance", None)
+            self.context.logger.debug(f"Raw balance retrieved for {token_symbol}: {balance}")
+
+            # Ensure the balance is not None
+            if balance is None:
+                self.context.logger.error(f"No balance data returned for {token_symbol}: {response_msg}")
+                balances[token_symbol] = None
+                continue
+
+            # Convert the balance to a readable format (assuming 18 decimals for ERC20 tokens)
+            readable_balance = balance
+            balances[token_symbol] = readable_balance
+
+            # Log the converted balance
+            self.context.logger.info(f"Balance for {token_symbol} (in readable format): {readable_balance}")
+
+        # Final printout of all token balances
+        self.context.logger.info("Completed fetching balances for all tokens.")
+        for token, balance in balances.items():
+            if balance is not None:
+                self.context.logger.info(f"Final balance for {token}: {balance}")
+            else:
+                self.context.logger.info(f"Balance for {token} could not be retrieved.")
+
+        return balances if balances else None
+
+    def calculate_portfolio_allocation(self) -> Generator[None, None, Optional[Tuple[Dict[str, float], float]]]:
+        """
+        Calculate the total portfolio value and percentage allocation based on token balances and prices.
+
+        :return: A tuple containing:
+                - token_values: Dictionary of each token's value in USD.
+                - total_portfolio_value: Total value of the portfolio in USD.
+        """
+
+        # Step 1: Get token balances
+        self.context.logger.info("Fetching token balances...")
+        token_balances = yield from self.get_token_balances()
+        if token_balances is None:
+            self.context.logger.error("Failed to retrieve token balances.")
+            return None
+
+        # Step 2: Initialize total value
+        total_portfolio_value = 0.0
+        token_values = {}
+
+        # Step 3: Get prices and calculate value for each token
+        for token_symbol, balance in token_balances.items():
+            if balance is None:
+                self.context.logger.error(f"No balance available for {token_symbol}")
+                continue
+
+            # Fetch token price
+            self.context.logger.info(f"Fetching price for {token_symbol}...")
+            price = yield from self.get_token_price_specs(symbol=token_symbol)
+            if price is None:
+                self.context.logger.error(f"Failed to retrieve price for {token_symbol}")
+                continue
+
+            # Calculate token's value in the portfolio
+            token_value = balance * price
+            token_values[token_symbol] = token_value
+            total_portfolio_value += token_value
+
+            self.context.logger.info(f"Value for {token_symbol}: {token_value:.2f} USD")
+
+        # Step 4: Calculate percentage allocation
+        if total_portfolio_value == 0:
+            self.context.logger.error("Total portfolio value is zero; cannot calculate allocation.")
+            return None
+
+        self.context.logger.info("Portfolio Allocation:")
+        for token_symbol, token_value in token_values.items():
+            percentage = (token_value / total_portfolio_value) * 100
+            self.context.logger.info(f"{token_symbol}: {percentage:.2f}% of portfolio (Value: {token_value:.2f} USD)")
+
+        self.context.logger.info(f"Total Portfolio Value: {total_portfolio_value:.2f} USD")
+
+        # # Step 5: Generate and store the rebalancing report in IPFS
+        # report_ipfs_hash = yield from self.generate_and_store_report(token_values, total_portfolio_value)
+        # if report_ipfs_hash:
+        #     self.context.logger.info(f"Rebalancing report stored in IPFS: https://gateway.autonolas.tech/ipfs/{report_ipfs_hash}")
+        # else:
+        #     self.context.logger.error("Failed to store rebalancing report in IPFS.")
+
+
+        # Return token values and total portfolio value
+        return token_values, total_portfolio_value
+        
+
+class AlternativeDataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=too-many-ancestors
+    """This behaviours pulls token prices from API endpoints and reads the native balance of an account"""
+
+    matching_round: Type[AbstractRound] = AlternativeDataPullRound
+
+    def async_act(self) -> Generator:
+        """Do the act, supporting asynchronous execution."""
+
+        with self.context.benchmark_tool.measure(self.behaviour_id).local():
+            sender = self.context.agent_address
+
+            token_values, total_portfolio_value = yield from self.calculate_portfolio_allocation()
+            self.context.logger.info(f"Token values: {token_values}")
+            self.context.logger.info(f"Total portfolio value: {total_portfolio_value}")
+
+            # Convert token values to JSON, dict is not hashable causing problems
+            token_values_json = json.dumps(token_values, sort_keys=True) if token_values else None
+            self.context.logger.info(f"Token values JSON: {token_values_json}")
+
+
+            # Prepare the payload to be shared with other agents
+            payload = AlternativeDataPullPayload(
+                sender=sender,
+                token_values=token_values_json,
+                total_portfolio_value=total_portfolio_value,
+            )
+
+        # Send the payload to all agents and mark the behaviour as done
+        with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
+            yield from self.send_a2a_transaction(payload)
+            yield from self.wait_until_round_end()
+
+        self.set_done()
+
+    def get_token_price_specs(self, symbol) -> Generator[None, None, Optional[float]]:
+        """Get token price from Coinmarketcap using ApiSpecs"""
+
         # Get the specs
-        specs = self.coingecko_specs.get_spec()
+        specs = self.coinmarketcap_specs.get_spec()
+        specs["parameters"]["symbol"] = symbol
 
         # Make the call
         raw_response = yield from self.get_http_response(**specs)
 
         # Process the response
-        response = self.coingecko_specs.process_response(raw_response)
+        response = self.coinmarketcap_specs.process_response(raw_response)
 
-        # Get the price
-        price = response.get("usd", None)
-        self.context.logger.info(f"Got token price from Coingecko: {price}")
+        # Navigate to get the price
+        token_data = response.get(symbol, {})
+        price_info = token_data.get("quote", {}).get("USD", {})
+        price = price_info.get("price", None)
+
+        # Log and return the price
+        self.context.logger.info(f"Got token price from CoinMarketCap: {price}")
+
         return price
 
-    def send_price_to_ipfs(self, price) -> Generator[None, None, Optional[str]]:
-        """Store the token price in IPFS"""
-        data = {"price": price}
-        price_ipfs_hash = yield from self.send_to_ipfs(
-            filename=self.metadata_filepath, obj=data, filetype=SupportedFiletype.JSON
-        )
-        self.context.logger.info(
-            f"Price data stored in IPFS: https://gateway.autonolas.tech/ipfs/{price_ipfs_hash}"
-        )
-        return price_ipfs_hash
+    def get_token_balances(self) -> Generator[None, None, Optional[Dict[str, float]]]:
+        """
+        Get balances for each specified token from the deployed contract using parameters from self.params.
 
-    def get_erc20_balance(self) -> Generator[None, None, Optional[float]]:
-        """Get ERC20 balance"""
-        self.context.logger.info(
-            f"Getting Olas balance for Safe {self.synchronized_data.safe_contract_address}"
-        )
+        :return: Dictionary of token balances, or None if an error occurs.
+        """
+        self.context.logger.info("Starting to fetch token balances for the portfolio.")
 
-        # Use the contract api to interact with the ERC20 contract
-        response_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
-            contract_address=self.params.olas_token_address,
-            contract_id=str(ERC20.contract_id),
-            contract_callable="check_balance",
-            account=self.synchronized_data.safe_contract_address,
-            chain_id=GNOSIS_CHAIN_ID,
-        )
+        # Retrieve portfolio address and tokens to rebalance from params
+        portfolio_address = self.params.portfolio_address_string
+        mock_contract_address = self.params.mock_contract_address_string
 
-        # Check that the response is what we expect
-        if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
-            self.context.logger.error(
-                f"Error while retrieving the balance: {response_msg}"
+        tokens_to_rebalance = self.params.tokens_to_rebalance
+
+        # Log the portfolio details and tokens
+        self.context.logger.info(f"Portfolio Address: {portfolio_address}")
+        self.context.logger.info(f"Tokens to Rebalance: {tokens_to_rebalance}")
+
+        balances = {}
+        for token_symbol in tokens_to_rebalance:
+            self.context.logger.info(f"Fetching balance for token: {token_symbol}")
+
+            # Call the contract API to get the token balance for the portfolio
+            response_msg = yield from self.get_contract_api_response(
+                performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
+                contract_address=mock_contract_address,  # Portfolio contract address
+                contract_id=str(MOCKDEX.contract_id),  # Contract ID for the deployed contract
+                contract_callable="getBalance",
+                user=portfolio_address, 
+                token=token_symbol,
+                chain_id=ETHEREUM_CHAIN_ID,  # Replace with the appropriate chain ID
             )
+
+            # Check if the response contains the expected balance data
+            if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
+                self.context.logger.error(f"Error retrieving balance for {token_symbol}: {response_msg}")
+                balances[token_symbol] = None
+                continue
+
+            # Extract balance from the response
+            balance = response_msg.raw_transaction.body.get("balance", None)
+            self.context.logger.debug(f"Raw balance retrieved for {token_symbol}: {balance}")
+
+            # Ensure the balance is not None
+            if balance is None:
+                self.context.logger.error(f"No balance data returned for {token_symbol}: {response_msg}")
+                balances[token_symbol] = None
+                continue
+
+            # Convert the balance to a readable format (assuming 18 decimals for ERC20 tokens)
+            readable_balance = balance
+            balances[token_symbol] = readable_balance
+
+            # Log the converted balance
+            self.context.logger.info(f"Balance for {token_symbol} (in readable format): {readable_balance}")
+
+        # Final printout of all token balances
+        self.context.logger.info("Completed fetching balances for all tokens.")
+        for token, balance in balances.items():
+            if balance is not None:
+                self.context.logger.info(f"Final balance for {token}: {balance}")
+            else:
+                self.context.logger.info(f"Balance for {token} could not be retrieved.")
+
+        return balances if balances else None
+
+    def calculate_portfolio_allocation(self) -> Generator[None, None, Optional[Tuple[Dict[str, float], float]]]:
+        """
+        Calculate the total portfolio value and percentage allocation based on token balances and prices.
+
+        :return: A tuple containing:
+                - token_values: Dictionary of each token's value in USD.
+                - total_portfolio_value: Total value of the portfolio in USD.
+        """
+
+        # Step 1: Get token balances
+        self.context.logger.info("Fetching token balances...")
+        token_balances = yield from self.get_token_balances()
+        if token_balances is None:
+            self.context.logger.error("Failed to retrieve token balances.")
             return None
 
-        balance = response_msg.raw_transaction.body.get("token", None)
+        # Step 2: Initialize total value
+        total_portfolio_value = 0.0
+        token_values = {}
 
-        # Ensure that the balance is not None
-        if balance is None:
-            self.context.logger.error(
-                f"Error while retrieving the balance:  {response_msg}"
-            )
+        # Step 3: Get prices and calculate value for each token
+        for token_symbol, balance in token_balances.items():
+            if balance is None:
+                self.context.logger.error(f"No balance available for {token_symbol}")
+                continue
+
+            # Fetch token price
+            self.context.logger.info(f"Fetching price for {token_symbol}...")
+            price = yield from self.get_token_price_specs(symbol=token_symbol)
+            if price is None:
+                self.context.logger.error(f"Failed to retrieve price for {token_symbol}")
+                continue
+
+            # Calculate token's value in the portfolio
+            token_value = balance * price
+            token_values[token_symbol] = token_value
+            total_portfolio_value += token_value
+
+            self.context.logger.info(f"Value for {token_symbol}: {token_value:.2f} USD")
+
+        # Step 4: Calculate percentage allocation
+        if total_portfolio_value == 0:
+            self.context.logger.error("Total portfolio value is zero; cannot calculate allocation.")
             return None
 
-        balance = balance / 10**18  # from wei
+        self.context.logger.info("Portfolio Allocation:")
+        for token_symbol, token_value in token_values.items():
+            percentage = (token_value / total_portfolio_value) * 100
+            self.context.logger.info(f"{token_symbol}: {percentage:.2f}% of portfolio (Value: {token_value:.2f} USD)")
 
-        self.context.logger.info(
-            f"Account {self.synchronized_data.safe_contract_address} has {balance} Olas"
-        )
-        return balance
+        self.context.logger.info(f"Total Portfolio Value: {total_portfolio_value:.2f} USD")
 
-    def get_native_balance(self) -> Generator[None, None, Optional[float]]:
-        """Get the native balance"""
-        self.context.logger.info(
-            f"Getting native balance for Safe {self.synchronized_data.safe_contract_address}"
-        )
+        # # Step 5: Generate and store the rebalancing report in IPFS
+        # report_ipfs_hash = yield from self.generate_and_store_report(token_values, total_portfolio_value)
+        # if report_ipfs_hash:
+        #     self.context.logger.info(f"Rebalancing report stored in IPFS: https://gateway.autonolas.tech/ipfs/{report_ipfs_hash}")
+        # else:
+        #     self.context.logger.error("Failed to store rebalancing report in IPFS.")
 
-        ledger_api_response = yield from self.get_ledger_api_response(
-            performative=LedgerApiMessage.Performative.GET_STATE,
-            ledger_callable="get_balance",
-            account=self.synchronized_data.safe_contract_address,
-            chain_id=GNOSIS_CHAIN_ID,
-        )
 
-        if ledger_api_response.performative != LedgerApiMessage.Performative.STATE:
-            self.context.logger.error(
-                f"Error while retrieving the native balance: {ledger_api_response}"
-            )
-            return None
-
-        balance = cast(int, ledger_api_response.state.body["get_balance_result"])
-        balance = balance / 10**18  # from wei
-
-        self.context.logger.error(f"Got native balance: {balance}")
-
-        return balance
-
+        # Return token values and total portfolio value
+        return token_values, total_portfolio_value
+        
 
 class DecisionMakingBehaviour(
     LearningBaseBehaviour
@@ -293,9 +547,9 @@ class DecisionMakingBehaviour(
             sender = self.context.agent_address
 
             # Make a decision: either transact or not
-            event = yield from self.get_next_event()
+            event,adjustment_balances = yield from self.get_next_event()
 
-            payload = DecisionMakingPayload(sender=sender, event=event)
+            payload = DecisionMakingPayload(sender=sender, event=event, adjustment_balances=adjustment_balances)
 
         with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
             yield from self.send_a2a_transaction(payload)
@@ -303,60 +557,34 @@ class DecisionMakingBehaviour(
 
         self.set_done()
 
-    def get_next_event(self) -> Generator[None, None, str]:
+    def get_next_event(self) -> Generator[None, None, Optional[Tuple[str,Dict[str, float]] ]]:
         """Get the next event: decide whether ot transact or not based on some data."""
 
-        # This method showcases how to make decisions based on conditions.
-        # This is just a dummy implementation.
+        threshold_exceed, rebalancing_actions, token_values, total_portfolio_value = yield from self.calculate_rebalancing_actions()
 
-        # Get the latest block number from the chain
-        block_number = yield from self.get_block_number()
+        if not threshold_exceed:
+            self.context.logger.info("No need for adjustment!")
+            return Event.DONE.value, None
+        else:
+            self.context.logger.info("There should be some adjustment in the portfolio!")
+            
+            # Generate and store the rebalancing report in IPFS
+            report_ipfs_hash = yield from self.generate_and_store_report(token_values, total_portfolio_value)
+            if report_ipfs_hash:
+                self.context.logger.info(f"Rebalancing report stored in IPFS: https://gateway.autonolas.tech/ipfs/{report_ipfs_hash}")
+            else:
+                self.context.logger.error("Failed to store rebalancing report in IPFS.")
 
-        # Get the balance we calculated in the previous round
-        native_balance = self.synchronized_data.native_balance
+            rebalancing_actions_json = json.dumps(rebalancing_actions, sort_keys=True) if rebalancing_actions else None
+            return Event.TRANSACT.value, rebalancing_actions_json
 
-        # We stored the price using two approaches: synchronized_data and IPFS
-        # Similarly, we retrieve using the corresponding ways
-        token_price = self.synchronized_data.price
-        token_price = yield from self.get_price_from_ipfs()
 
-        # If we fail to get the block number, we send the ERROR event
-        if not block_number:
-            self.context.logger.info("Block number is None. Sending the ERROR event...")
-            return Event.ERROR.value
-
-        # If we fail to get the token price, we send the ERROR event
-        if not token_price:
-            self.context.logger.info("Token price is None. Sending the ERROR event...")
-            return Event.ERROR.value
-
-        # If we fail to get the token balance, we send the ERROR event
-        if not native_balance:
-            self.context.logger.info(
-                "Native balance is None. Sending the ERROR event..."
-            )
-            return Event.ERROR.value
-
-        # Make a decision based on the balance's last number
-        last_number = int(str(native_balance)[-1])
-
-        # If the number is even, we transact
-        if last_number % 2 == 0:
-            self.context.logger.info("Number is even. Transacting.")
-            return Event.TRANSACT.value
-
-        # Otherwise we send the DONE event
-        self.context.logger.info("Number is odd. Not transacting.")
-        return Event.DONE.value
-
-    def get_block_number(self) -> Generator[None, None, Optional[int]]:
-        """Get the block number"""
 
         # Call the ledger connection (equivalent to web3.py)
         ledger_api_response = yield from self.get_ledger_api_response(
             performative=LedgerApiMessage.Performative.GET_STATE,
             ledger_callable="get_block_number",
-            chain_id=GNOSIS_CHAIN_ID,
+            chain_id=ETHEREUM_CHAIN_ID,
         )
 
         # Check for errors on the response
@@ -374,15 +602,172 @@ class DecisionMakingBehaviour(
         self.context.logger.error(f"Got block number: {block_number}")
 
         return block_number
+    
+    def calculate_rebalancing_actions(self) -> Generator[None, None, Union[bool,Dict[str, float],Dict[str, float],float]]:
+        """, Optional[
+        Calculate rebalancing actions based on current and target percentages.
 
-    def get_price_from_ipfs(self) -> Generator[None, None, Optional[dict]]:
-        """Load the price data from IPFS"""
-        ipfs_hash = self.synchronized_data.price_ipfs_hash
-        price = yield from self.get_from_ipfs(
-            ipfs_hash=ipfs_hash, filetype=SupportedFiletype.JSON
+        :return: Dictionary with tokens as keys and new target token amounts as values.
+        """
+        # Start of method logging
+        self.context.logger.info("Starting rebalancing calculation...")
+
+        # Retrieve and log token values JSON
+        token_values_json = self.synchronized_data.token_values
+        self.context.logger.info(f"Token values JSON retrieved: {token_values_json}")
+
+        token_values = {}
+        # Convert JSON string back to a dictionary if it's not None
+        if token_values_json is not None:
+            try:
+                token_values = json.loads(token_values_json)
+                self.context.logger.info(f"Parsed token values dictionary: {token_values}")
+            except json.JSONDecodeError as e:
+                self.context.logger.error(f"Failed to decode token values JSON: {e}")
+                token_values = {}
+        else:
+            self.context.logger.warning("Token values JSON is None. No tokens to rebalance.")
+            
+
+        # Retrieve and check total portfolio value
+        total_portfolio_value = self.synchronized_data.total_portfolio_value
+        if total_portfolio_value is None or total_portfolio_value <= 0:
+            self.context.logger.error("Total portfolio value is None or zero; cannot calculate rebalancing.")
+            return None
+
+        # Log other parameters
+        target_percentages = self.params.target_percentages
+        tokens_to_rebalance = self.params.tokens_to_rebalance
+        variation_threshold = self.params.variation_threshold
+
+        self.context.logger.info(f"Total portfolio value: {total_portfolio_value}")
+        self.context.logger.info(f"Target percentages: {target_percentages}")
+        self.context.logger.info(f"Tokens to rebalance: {tokens_to_rebalance}")
+        self.context.logger.info(f"Variation threshold: {variation_threshold}")
+
+        # Initialize dictionary to store the new target token amounts for each token
+        new_token_amounts = {}
+        isRebalanceNeeded = False
+
+        # Step 1: Calculate current and target values for each token
+        for i, token in enumerate(tokens_to_rebalance):
+            self.context.logger.info(f"Processing token: {token}")
+
+            # Retrieve current value in USD
+            current_value = token_values.get(token, 0)
+            target_percentage = target_percentages[i]
+
+            # Retrieve the token price
+            self.context.logger.info(f"Fetching price for {token}...")
+            token_price = yield from self.get_token_price_specs(token)
+            if token_price is None:
+                self.context.logger.error(f"Could not retrieve price for {token}")
+                continue
+
+            # Calculate the current token amount by dividing USD value by token price
+            current_token_amount = current_value / token_price
+            current_percentage = (current_value / total_portfolio_value) * 100
+
+            # Calculate target value in USD and target token amount
+            target_value = (target_percentage / 100) * total_portfolio_value
+            target_token_amount = target_value / token_price
+
+            # Log current and target values in USD and as percentages
+            self.context.logger.info(
+                f"{token}: current amount = {current_token_amount:.4f}, current value in USD = {current_value:.2f}, "
+                f"current % of portfolio = {current_percentage:.2f}%, target value in USD = {target_value:.2f}"
+            )
+
+            # Calculate deviation based on the difference between current and target percentage
+            deviation = current_percentage - target_percentage
+
+            # Check if deviation exceeds threshold and store new target token amount if needed
+            if abs(deviation) > variation_threshold:
+                new_token_amounts[token] = target_token_amount
+
+                # Log the required adjustment
+                action = "increase" if target_token_amount > current_token_amount else "decrease"
+                self.context.logger.info(
+                    f"{token}: To rebalance, {action} to reach target of {target_token_amount:.4f} tokens "
+                    f"(deviation: {deviation:.2f}% in USD balance)"
+                )
+                isRebalanceNeeded = True
+                self.context.logger.info(f"Completed rebalancing calculation. New target token amounts: {new_token_amounts}")
+            else:
+                self.context.logger.info(
+                    f"{token} is within the threshold ({variation_threshold}% deviation in percentage) and requires no rebalancing."
+                )
+
+        
+
+        return isRebalanceNeeded, new_token_amounts, token_values, total_portfolio_value
+
+    def get_token_price_specs(self, symbol) -> Generator[None, None, Optional[float]]:
+                """Get token price from Coingecko using ApiSpecs"""
+
+                # Get the specs
+                # specs = self.coingecko_specs.get_spec()
+                specs = self.coinmarketcap_specs.get_spec()
+                specs["parameters"]["symbol"] = symbol
+                # Make the call
+                raw_response = yield from self.get_http_response(**specs)
+
+                # Process the response
+                response = self.coinmarketcap_specs.process_response(raw_response)
+
+                # Navigate to get the price
+                token_data = response.get(symbol, {})
+                price_info = token_data.get("quote", {}).get("USD", {})
+                price = price_info.get("price", None)
+
+                # Log and return the price
+                self.context.logger.info(f"Got token price from CoinMarketCap: {price}")
+
+                # Get the price
+                # price = response.get("usd", None)
+                # self.context.logger.info(f"Got token price from Coingecko: {price}")
+                return price
+
+    def generate_and_store_report(self, token_values: Dict[str, float], total_portfolio_value: float) -> Generator[None, None, Optional[str]]:
+        """
+        Generate the rebalancing report, store it in IPFS, and return the IPFS hash.
+
+        :param token_values: Dictionary with tokens and their USD values.
+        :param total_portfolio_value: Total value of the portfolio in USD.
+        :return: IPFS hash of the stored report or None if storage fails.
+        """
+        from datetime import datetime
+
+        # Generate the report JSON
+        report = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "variation_threshold": self.params.variation_threshold,
+            "total_portfolio_value": total_portfolio_value,
+            "tokens": []
+        }
+
+        for token, usd_value in token_values.items():
+            target_percentage = self.params.target_percentages[self.params.tokens_to_rebalance.index(token)]
+            current_percentage = (usd_value / total_portfolio_value) * 100
+            token_price = yield from self.get_token_price_specs(token)
+            current_token_amount = usd_value / token_price if token_price else 0
+
+            report["tokens"].append({
+                "token": token,
+                "current_number_of_tokens": current_token_amount,
+                "current_usd_value": usd_value,
+                "current_percentage_in_portfolio": current_percentage,
+                "target_percentage": target_percentage,
+                "usd_deviation_from_target": current_percentage - target_percentage
+            })
+
+        # Store the report in IPFS
+        report_ipfs_hash = yield from self.send_to_ipfs(
+            filename="PortfolioRebalancer_Report.json", obj=report, filetype=SupportedFiletype.JSON
         )
-        self.context.logger.error(f"Got price from IPFS: {price}")
-        return price
+
+        return report_ipfs_hash
+
 
 
 class TxPreparationBehaviour(
@@ -398,8 +783,12 @@ class TxPreparationBehaviour(
         with self.context.benchmark_tool.measure(self.behaviour_id).local():
             sender = self.context.agent_address
 
+            adjustment_balances_json = self.synchronized_data.adjustment_balances
+            # self.context.logger.info(f"Token values JSON retrieved: {adjustment_balances_json}")            
+
+
             # Get the transaction hash
-            tx_hash = yield from self.get_tx_hash()
+            tx_hash = yield from self.generate_multisend_transactions(adjustment_balances_json)
 
             payload = TxPreparationPayload(
                 sender=sender, tx_submitter=self.auto_behaviour_id(), tx_hash=tx_hash
@@ -411,182 +800,125 @@ class TxPreparationBehaviour(
 
         self.set_done()
 
-    def get_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Get the transaction hash"""
+    def get_adjust_balance_data(self, user: str, token: str, new_balance: int) -> Generator[None, None, Dict]:
+        """
+        Get the minimal transaction data for adjusting balance in the MOCKDEX contract.
 
-        # Here want to showcase how to prepare different types of transactions.
-        # Depending on the timestamp's last number, we will make a native transaction,
-        # an ERC20 transaction or both.
+        :param user: Address of the user.
+        :param token: Token name.
+        :param new_balance: New balance to set.
+        :return: Dictionary with minimal transaction data.
+        """
+        # Get the multisig address from parameters
+        safe_address = self.params.safe_address
+        mock_contract_address = self.params.mock_contract_address_string
 
-        # All transactions need to be sent from the Safe controlled by the agents.
+        # Log the values of the important parameters
+        self.context.logger.info(f"Using safe address: {safe_address}")
+        self.context.logger.info(f"Mock contract address (MOCKDEX): {mock_contract_address}")
+        self.context.logger.info(f"User address: {user}")
+        self.context.logger.info(f"Token: {token}")
+        self.context.logger.info(f"New balance: {new_balance}")
+        self.context.logger.info(f"Chain ID: {ETHEREUM_CHAIN_ID}")
 
-        # Again, make a decision based on the timestamp (on its last number)
-        now = int(self.get_sync_timestamp())
-        self.context.logger.info(f"Timestamp is {now}")
-        last_number = int(str(now)[-1])
-
-        # Native transaction (Safe -> recipient)
-        if last_number in [0, 1, 2, 3]:
-            self.context.logger.info("Preparing a native transaction")
-            tx_hash = yield from self.get_native_transfer_safe_tx_hash()
-            return tx_hash
-
-        # ERC20 transaction (Safe -> recipient)
-        if last_number in [4, 5, 6]:
-            self.context.logger.info("Preparing an ERC20 transaction")
-            tx_hash = yield from self.get_erc20_transfer_safe_tx_hash()
-            return tx_hash
-
-        # Multisend transaction (both native and ERC20) (Safe -> recipient)
-        self.context.logger.info("Preparing a multisend transaction")
-        tx_hash = yield from self.get_multisend_safe_tx_hash()
-        return tx_hash
-
-    def get_native_transfer_safe_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Prepare a native safe transaction"""
-
-        # Transaction data
-        # This method is not a generator, therefore we don't use yield from
-        data = self.get_native_transfer_data()
-
-        # Prepare safe transaction
-        safe_tx_hash = yield from self._build_safe_tx_hash(**data)
-        self.context.logger.info(f"Native transfer hash is {safe_tx_hash}")
-
-        return safe_tx_hash
-
-    def get_native_transfer_data(self) -> Dict:
-        """Get the native transaction data"""
-        # Send 1 wei to the recipient
-        data = {VALUE_KEY: 1, TO_ADDRESS_KEY: self.params.transfer_target_address}
-        self.context.logger.info(f"Native transfer data is {data}")
-        return data
-
-    def get_erc20_transfer_safe_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Prepare an ERC20 safe transaction"""
-
-        # Transaction data
-        data_hex = yield from self.get_erc20_transfer_data()
-
-        # Check for errors
-        if data_hex is None:
-            return None
-
-        # Prepare safe transaction
-        safe_tx_hash = yield from self._build_safe_tx_hash(
-            to_address=self.params.transfer_target_address, data=bytes.fromhex(data_hex)
-        )
-
-        self.context.logger.info(f"ERC20 transfer hash is {safe_tx_hash}")
-
-        return safe_tx_hash
-
-    def get_erc20_transfer_data(self) -> Generator[None, None, Optional[str]]:
-        """Get the ERC20 transaction data"""
-
-        self.context.logger.info("Preparing ERC20 transfer transaction")
-
-        # Use the contract api to interact with the ERC20 contract
+        # Prepare transaction data by calling `adjustBalance` on MOCKDEX contract
         response_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
-            contract_address=self.params.olas_token_address,
-            contract_id=str(ERC20.contract_id),
-            contract_callable="build_transfer_tx",
-            recipient=self.params.transfer_target_address,
-            amount=1,
-            chain_id=GNOSIS_CHAIN_ID,
+            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,
+            contract_address=mock_contract_address,  # MOCKDEX contract address
+            contract_id=str(MOCKDEX.contract_id),
+            contract_callable="adjustBalance",
+            user=user,
+            token=token,
+            new_balance=new_balance,
+            chain_id=ETHEREUM_CHAIN_ID,
+            from_address=safe_address, 
+
         )
 
-        # Check that the response is what we expect
+        # Check if transaction data was generated successfully
         if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
-            self.context.logger.error(
-                f"Error while retrieving the balance: {response_msg}"
-            )
-            return None
+            self.context.logger.error(f"Failed to prepare transaction data for adjustBalance: {response_msg}")
+            return {}
 
-        data_bytes: Optional[bytes] = response_msg.raw_transaction.body.get(
-            "data", None
-        )
+        transaction_data_hex = response_msg.raw_transaction.body.get("data")
+        if transaction_data_hex is None:
+            self.context.logger.error("Transaction data is missing from response.")
+            return {}
 
-        # Ensure that the data is not None
-        if data_bytes is None:
-            self.context.logger.error(
-                f"Error while preparing the transaction: {response_msg}"
-            )
-            return None
+        mock_contract_address = self.params.mock_contract_address_string
 
-        data_hex = data_bytes.hex()
-        self.context.logger.info(f"ERC20 transfer data is {data_hex}")
-        return data_hex
+        # Return minimal transaction data
+        transaction_data = {
+            "to_address": mock_contract_address,  # MOCKDEX contract address
+            "data": bytes.fromhex(transaction_data_hex[2:])  # Convert hex string to bytes without "0x"
+        }
+        self.context.logger.info(f"Prepared minimal adjust balance transaction data: {transaction_data}")
+        
+        return transaction_data
 
-    def get_multisend_safe_tx_hash(self) -> Generator[None, None, Optional[str]]:
-        """Get a multisend transaction hash"""
-        # Step 1: we prepare a list of transactions
-        # Step 2: we pack all the transactions in a single one using the mulstisend contract
-        # Step 3: we wrap the multisend call inside a Safe call, as always
+    def generate_multisend_transactions(self, adjustment_balances_json: str) -> Generator[None, None, Optional[str]]:
+        """Generate multisend transactions for each token adjustment balance."""
 
+        # Parse the adjustment balances JSON to get the target balances for each token
         multi_send_txs = []
+        adjustment_balances = json.loads(adjustment_balances_json)
+        portfolio_address = self.params.portfolio_address_string
 
-        # Native transfer
-        native_transfer_data = self.get_native_transfer_data()
-        multi_send_txs.append(
-            {
+        for token, target_balance in adjustment_balances.items():
+            self.context.logger.info(f"Preparing multisend transaction for {token} with target balance {target_balance}")
+
+            # Step 1: Prepare the balance adjustment transaction data
+            balance_adjustment_data = yield from self.get_adjust_balance_data(
+                user=portfolio_address,
+                token=token,
+                new_balance=round(target_balance)
+            )
+            if not balance_adjustment_data:
+                self.context.logger.error(f"Failed to prepare balance adjustment transaction for {token}")
+                continue
+
+            multi_send_txs.append({
                 "operation": MultiSendOperation.CALL,
-                "to": self.params.transfer_target_address,
-                "value": native_transfer_data[VALUE_KEY],
-                # No data key in this transaction, since it is a native transfer
-            }
-        )
-
-        # ERC20 transfer
-        erc20_transfer_data_hex = yield from self.get_erc20_transfer_data()
-
-        if erc20_transfer_data_hex is None:
-            return None
-
-        multi_send_txs.append(
-            {
-                "operation": MultiSendOperation.CALL,
-                "to": self.params.olas_token_address,
+                "to": balance_adjustment_data["to_address"],
+                "data": balance_adjustment_data["data"],
                 "value": ZERO_VALUE,
-                "data": bytes.fromhex(erc20_transfer_data_hex),
-            }
-        )
+            })
+            self.context.logger.info(f"Prepared balance adjustment data for {token}: {balance_adjustment_data}")
 
-        # Multisend call
+
+        # Step 3: Pack the multisend transactions into a single call
+        self.context.logger.info(f"Preparing multisend transaction with txs: {multi_send_txs}")
         contract_api_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
+            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,
             contract_address=self.params.multisend_address,
             contract_id=str(MultiSendContract.contract_id),
             contract_callable="get_tx_data",
             multi_send_txs=multi_send_txs,
-            chain_id=GNOSIS_CHAIN_ID,
+            chain_id=ETHEREUM_CHAIN_ID,
         )
 
-        # Check for errors
-        if (
-            contract_api_msg.performative
-            != ContractApiMessage.Performative.RAW_TRANSACTION
-        ):
-            self.context.logger.error(
-                f"Could not get Multisend tx hash. "
-                f"Expected: {ContractApiMessage.Performative.RAW_TRANSACTION.value}, "
-                f"Actual: {contract_api_msg.performative.value}"
-            )
+        # Step 4: Check for errors and prepare Safe transaction hash
+        if contract_api_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
+            self.context.logger.error("Could not get Multisend tx hash.")
             return None
 
-        # Extract the multisend data and strip the 0x
-        multisend_data = cast(str, contract_api_msg.raw_transaction.body["data"])[2:]
-        self.context.logger.info(f"Multisend data is {multisend_data}")
+        multisend_data = contract_api_msg.raw_transaction.body["data"]
+        # Strip "0x" if it exists, then convert
+        multisend_data = multisend_data[2:] if multisend_data.startswith("0x") else multisend_data
+        data_bytes = bytes.fromhex(multisend_data)
 
-        # Prepare the Safe transaction
         safe_tx_hash = yield from self._build_safe_tx_hash(
             to_address=self.params.multisend_address,
-            value=ZERO_VALUE,  # the safe is not moving any native value into the multisend
-            data=bytes.fromhex(multisend_data),
-            operation=SafeOperation.DELEGATE_CALL.value,  # we are delegating the call to the multisend contract
+            value=ZERO_VALUE,
+            data=data_bytes,
+            operation=SafeOperation.DELEGATE_CALL.value,
         )
-        return safe_tx_hash
+        if safe_tx_hash is None:
+            self.context.logger.error("Failed to prepare Safe transaction hash.")
+        else:
+            self.context.logger.info(f"Safe transaction hash successfully prepared: {safe_tx_hash}")
+
+        return safe_tx_hash if safe_tx_hash else None
 
     def _build_safe_tx_hash(
         self,
@@ -611,7 +943,7 @@ class TxPreparationBehaviour(
             value=value,
             data=data,
             safe_tx_gas=SAFE_GAS,
-            chain_id=GNOSIS_CHAIN_ID,
+            chain_id=ETHEREUM_CHAIN_ID,
             operation=operation,
         )
 
@@ -650,14 +982,19 @@ class TxPreparationBehaviour(
 
         return safe_tx_hash
 
-
 class LearningRoundBehaviour(AbstractRoundBehaviour):
     """LearningRoundBehaviour"""
 
-    initial_behaviour_cls = DataPullBehaviour
+    initial_behaviour_cls = ApiSelectionBehaviour
     abci_app_cls = LearningAbciApp  # type: ignore
     behaviours: Set[Type[BaseBehaviour]] = [  # type: ignore
+        ApiSelectionBehaviour,
         DataPullBehaviour,
+        AlternativeDataPullBehaviour,
         DecisionMakingBehaviour,
         TxPreparationBehaviour,
+
     ]
+
+
+   

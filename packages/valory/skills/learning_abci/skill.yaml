@@ -7,25 +7,26 @@ license: Apache-2.0
 aea_version: '>=1.0.0, <2.0.0'
 fingerprint:
   __init__.py: bafybeiho3lkochqpmes4f235chq26oggmwnol3vjuvhosleoubbjirbwaq
-  behaviours.py: bafybeif4xzj46r2ws3n5gdfa7puk6exvpjsoyvwlm63wytn6r4hgiz2q6i
+  behaviours.py: bafybeicwyegawf72f2kgava2bihcxqyis24vhyib7q2cuzgudcvigfx5p4
   dialogues.py: bafybeifqjbumctlffx2xvpga2kcenezhe47qhksvgmaylyp5ypwqgfar5u
   fsm_specification.yaml: bafybeigbbydxuqephdpatb3fp3sxnvr77bfvvo5hwjimxfpgyl32wupe64
   handlers.py: bafybeigjadr4thz6hfpfx5abezbwnqhbxmachf4efasrn4z2vqhsqgnyvi
-  models.py: bafybeicreffhurci7jzpwvxnlo5z3a2j3vcfgkopg2gtwwxfrncbzk77ra
-  payloads.py: bafybeidc6qqnfvd7qovjatt2i2kbga7pj6epdghlzqxdhzx6b6j6p7ubvm
-  rounds.py: bafybeic5dfzu7pirvqqdq2enzwh4mhtrg5n2cr5xa7luq2wh27rixl5aha
+  models.py: bafybeihvscxfgiksdfn75zexuulztpb7vt5acbyaunaonsmupq4xx2hnoi
+  payloads.py: bafybeielg5upsxvrwmidwo7tgdixtlqizikez7czrjkkzt6wnsx6wcvjpy
+  rounds.py: bafybeifelliefxmk2l2az3lh2wgtjd6pdpj2h3m2fo44dnrbkquas2owum
 fingerprint_ignore_patterns: []
 connections: []
 contracts:
-- valory/gnosis_safe:0.1.0:bafybeihtqcpqthb37msgqabpzcc2xc3l3yzkp5pl2sodeghqyzzzyuevgi
-- valory/erc20:0.1.0:bafybeifen3rx236w2u6snltkwn26pxbxaoyfdjlmatgm33u3dq4gwa63c4
+- valory/gnosis_safe:0.1.0:bafybeiho6sbfts3zk3mftrngw37d5qnlvkqtnttt3fzexmcwkeevhu4wwi
+- valory/erc20:0.1.0:bafybeibk2y6ldylquuikk3cmtk64e2wnjbtuxy5doorzsp4ysx6uwqbdxm
+- valory/mock_dex:0.1.0:bafybeiachr37lhkbtgl32mnr76gmnsh5jzx7x2mavnkobs53blkxpwi3cu
 - valory/multisend:0.1.0:bafybeig5byt5urg2d2bsecufxe5ql7f4mezg3mekfleeh32nmuusx66p4y
 protocols:
 - valory/contract_api:1.0.0:bafybeidgu7o5llh26xp3u3ebq3yluull5lupiyeu6iooi2xyymdrgnzq5i
 - valory/ledger_api:1.0.0:bafybeihdk6psr4guxmbcrc26jr2cbgzpd5aljkqvpwo64bvaz7tdti2oni
 skills:
-- valory/abstract_round_abci:0.1.0:bafybeigjddhk7epta7xpnfvv426xedff5abh4xlkwi6cqgp4vkutgkvydm
-- valory/transaction_settlement_abci:0.1.0:bafybeifmgmwdkx4esemxjacjwzqkqymkuklb5nehkwqkx7v335fllgswcq
+- valory/abstract_round_abci:0.1.0:bafybeibovsktd3uxur45nrcomq5shcn46cgxd5idmhxbmjhg32c5abyqim
+- valory/transaction_settlement_abci:0.1.0:bafybeihq2yenstblmaadzcjousowj5kfn5l7ns5pxweq2gcrsczfyq5wzm
 behaviours:
   main:
     args: {}
@@ -131,6 +132,12 @@ models:
       transfer_target_address: '0x0000000000000000000000000000000000000000'
       olas_token_address: '0xcE11e14225575945b8E6Dc0D4F2dD4C570f79d9f'
       multisend_address: '0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761'
+      portfolio_address: null
+      api_selection: null
+      mock_contract_address: null
+      tokens_to_rebalance: null
+      target_percentages: null
+      variation_threshold: null
     class_name: Params
   coingecko_specs:
     args:
@@ -139,14 +146,29 @@ models:
         Accept: application/json
       method: GET
       parameters:
-        ids: autonolas
+        ids: null
         vs_currencies: usd
         x_cg_demo_api_key: null
-      response_key: autonolas
+      response_key: null
       response_type: dict
       retries: 5
       url: https://api.coingecko.com/api/v3/simple/price
     class_name: CoingeckoSpecs
+  coinmarketcap_specs:
+    args:
+      api_id: coinmarketcap
+      headers:
+        Accept: application/json
+      method: GET
+      parameters:
+        symbol: null
+        convert: USD
+        CMC_PRO_API_KEY: null
+      response_type: dict
+      response_key: data
+      retries: 5
+      url: https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest
+    class_name: CoinMarketCapSpecs
   requests:
     args: {}
     class_name: Requests

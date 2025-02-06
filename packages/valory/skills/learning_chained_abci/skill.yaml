@@ -8,22 +8,22 @@ aea_version: '>=1.0.0, <2.0.0'
 fingerprint:
   __init__.py: bafybeihu5y5llhaefw32jodf2nc2x5tig7cfo2fallbodv6vodczunpbve
   behaviours.py: bafybeiagipms5gfebqysx5sl4dhydppceqv4aga64ibqgygqczbh4imyxu
-  composition.py: bafybeib64i3h7vmimsjflc37j4s5feipiar7hib5ixdwbadphjezq5z4cu
+  composition.py: bafybeida3qec7gtmwahn6rx4xliamdeomvoiwcvezqn5o6pxknaitqawv4
   dialogues.py: bafybeiakqfqcpg7yrxt4bsyernhy5p77tci4qhmgqqjqi3ttx7zk6sklca
-  fsm_specification.yaml: bafybeigi2crcl5htovzx6u3rn7ti67ddmneog3w2iybcnjpbdvjegl2jfu
+  fsm_specification.yaml: bafybeibhguliurgppqgues6zhy3e3pioacgapilid7j26u4pmfsump5ape
   handlers.py: bafybeicru4lanvektcppxpecul4zwjfuaxseopxtsxrfzmbfaz5qk4m67q
-  models.py: bafybeico4qysu652lznxwxfamsu43d7llstplca5eqcwnmwg66fxmzt4qe
+  models.py: bafybeifngkdufuirzkicugfvnkr24gek5mls7hvq4dwexgo5nhsdxqwicm
 fingerprint_ignore_patterns: []
 connections: []
 contracts: []
 protocols: []
 skills:
-- valory/abstract_round_abci:0.1.0:bafybeigjddhk7epta7xpnfvv426xedff5abh4xlkwi6cqgp4vkutgkvydm
-- valory/registration_abci:0.1.0:bafybeiagi6e2h7kochmlemy5c5yk6hwn37tfxiqvk2en74jhowsdwlmrny
-- valory/reset_pause_abci:0.1.0:bafybeiezfedmmseox3ce5aucxsiszdmvskrwwbtpb2a3vw3sbmc5jt7nri
-- valory/termination_abci:0.1.0:bafybeiea67epwwgngp7b3wavs6hpkaxv6etyaps6g6325bchfnf354mibq
-- valory/learning_abci:0.1.0:bafybeihnsuuw2qnlq37fpxhhueasi2ty5ukqobhtdcwgjl52q6n574xusi
-- valory/transaction_settlement_abci:0.1.0:bafybeifmgmwdkx4esemxjacjwzqkqymkuklb5nehkwqkx7v335fllgswcq
+- valory/abstract_round_abci:0.1.0:bafybeibovsktd3uxur45nrcomq5shcn46cgxd5idmhxbmjhg32c5abyqim
+- valory/registration_abci:0.1.0:bafybeicnth5q4httefsusywx3zrrq4al47owvge72dqf2fziruicq6hqta
+- valory/reset_pause_abci:0.1.0:bafybeievjciqdvxhqxfjd4whqs27h6qbxqzrae7wwj7fpvxlvmtw3x35im
+- valory/termination_abci:0.1.0:bafybeid54buqxipiuduw7b6nnliiwsxajnltseuroad53wukfonpxca2om
+- valory/learning_abci:0.1.0:bafybeicwt4u4sphhf2eg5uksjyhl2juevandg3a6bzebys5qo2qhm6h364
+- valory/transaction_settlement_abci:0.1.0:bafybeihq2yenstblmaadzcjousowj5kfn5l7ns5pxweq2gcrsczfyq5wzm
 behaviours:
   main:
     args: {}
@@ -139,6 +139,12 @@ models:
       default_chain_id: gnosis
       transfer_target_address: '0x0000000000000000000000000000000000000000'
       olas_token_address: '0xcE11e14225575945b8E6Dc0D4F2dD4C570f79d9f'
+      portfolio_address: null
+      api_selection: null
+      mock_contract_address: null
+      tokens_to_rebalance: null
+      target_percentages: null
+      variation_threshold: null
     class_name: Params
   coingecko_specs:
     args:
@@ -147,14 +153,29 @@ models:
         Accept: application/json
       method: GET
       parameters:
-        ids: autonolas
+        ids: null
         vs_currencies: usd
         x_cg_demo_api_key: null
-      response_key: autonolas
+      response_key: null
       response_type: dict
       retries: 5
       url: https://api.coingecko.com/api/v3/simple/price
     class_name: CoingeckoSpecs
+  coinmarketcap_specs:
+    args:
+      api_id: coinmarketcap
+      headers:
+        Accept: application/json
+      method: GET
+      parameters:
+        symbol: null
+        convert: USD
+        CMC_PRO_API_KEY: null
+      response_type: dict
+      response_key: data
+      retries: 5
+      url: https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest
+    class_name: CoinMarketCapSpecs
   randomness_api:
     args:
       api_id: cloudflare
