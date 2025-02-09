@@ -5,8 +5,8 @@
         "contract/valory/portfolio_manager/0.1.0": "bafybeibypesdz25q7iewmphnxlf5nvmihtcxxin56k46aoaybnl7po4zaq",
         "skill/valory/learning_abci/0.1.0": "bafybeib5uc22ol2srj3jkbgt6cpl7ze3avax4dpdqrfgxjtqyv3t7zorti",
         "skill/valory/learning_chained_abci/0.1.0": "bafybeielkmbqqluehjmnicckrxr3esrl7ou7jy5iqftpywbkbkklejdpzi",
-        "agent/valory/learning_agent/0.1.0": "bafybeigms6mfny2lyhczcyay2l5jjyh6nkhlejcssfmgcsb4sazct5zsce",
-        "service/valory/learning_service/0.1.0": "bafybeicoqvkib3zotowujzheraoxvpqqhjp5hbjuxjsk3wcdcospykgupe"
+        "agent/valory/learning_agent/0.1.0": "bafybeicdmyjsks6aa5xthuehnsrpczkbj4pbmidjllcllvtexaya5722hq",
+        "service/valory/learning_service/0.1.0": "bafybeiel6uucybpu3aqjghbyi4vwc5yh3htmz6ncy53rbnas3fuxiai3xu"
     },
     "third_party": {
         "protocol/open_aea/signing/1.0.0": "bafybeihv62fim3wl2bayavfcg3u5e5cxu3b7brtu4cn5xoxd6lqwachasi",

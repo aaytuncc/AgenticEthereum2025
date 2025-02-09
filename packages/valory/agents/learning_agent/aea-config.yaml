@@ -86,7 +86,7 @@ config:
   ledger_apis:
     ethereum:
       address: ${str:https://virtual.base-sepolia.rpc.tenderly.co/275fe981-7631-4274-a70f-e41678e3a041}
-      chain_id: ${int:84532}
+      chain_id: ${int:1}
       poa_chain: ${bool:false}
       default_gas_price_strategy: ${str:eip1559}
     gnosis:
