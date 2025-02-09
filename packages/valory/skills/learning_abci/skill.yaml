@@ -7,19 +7,21 @@ license: Apache-2.0
 aea_version: '>=1.0.0, <2.0.0'
 fingerprint:
   __init__.py: bafybeiho3lkochqpmes4f235chq26oggmwnol3vjuvhosleoubbjirbwaq
-  behaviours.py: bafybeicwyegawf72f2kgava2bihcxqyis24vhyib7q2cuzgudcvigfx5p4
+  backup-behaviours.py: bafybeicszprjnerjmlxw7hzg6bhmlyexfsvhea3pwka3otye32vf6peg3e
+  behaviours.py: bafybeibstv6p4sktyhtxwyb2hr6iqfnhmynwgkigs23js4md34nxldyie4
   dialogues.py: bafybeifqjbumctlffx2xvpga2kcenezhe47qhksvgmaylyp5ypwqgfar5u
   fsm_specification.yaml: bafybeigbbydxuqephdpatb3fp3sxnvr77bfvvo5hwjimxfpgyl32wupe64
   handlers.py: bafybeigjadr4thz6hfpfx5abezbwnqhbxmachf4efasrn4z2vqhsqgnyvi
-  models.py: bafybeihvscxfgiksdfn75zexuulztpb7vt5acbyaunaonsmupq4xx2hnoi
+  models.py: bafybeigdtc6ykeywqeuu6ok3iirz2cuznt7gszezkp3n5fcwvppknl275q
   payloads.py: bafybeielg5upsxvrwmidwo7tgdixtlqizikez7czrjkkzt6wnsx6wcvjpy
-  rounds.py: bafybeifelliefxmk2l2az3lh2wgtjd6pdpj2h3m2fo44dnrbkquas2owum
+  rounds.py: bafybeidmaxolti32j64l4ga5qth7sd4ndhn35shmmdluobiut44allb7qy
 fingerprint_ignore_patterns: []
 connections: []
 contracts:
 - valory/gnosis_safe:0.1.0:bafybeiho6sbfts3zk3mftrngw37d5qnlvkqtnttt3fzexmcwkeevhu4wwi
 - valory/erc20:0.1.0:bafybeibk2y6ldylquuikk3cmtk64e2wnjbtuxy5doorzsp4ysx6uwqbdxm
 - valory/mock_dex:0.1.0:bafybeiachr37lhkbtgl32mnr76gmnsh5jzx7x2mavnkobs53blkxpwi3cu
+- valory/portfolio_manager:0.1.0:bafybeibypesdz25q7iewmphnxlf5nvmihtcxxin56k46aoaybnl7po4zaq
 - valory/multisend:0.1.0:bafybeig5byt5urg2d2bsecufxe5ql7f4mezg3mekfleeh32nmuusx66p4y
 protocols:
 - valory/contract_api:1.0.0:bafybeidgu7o5llh26xp3u3ebq3yluull5lupiyeu6iooi2xyymdrgnzq5i
@@ -135,6 +137,7 @@ models:
       portfolio_address: null
       api_selection: null
       mock_contract_address: null
+      portfolio_manager_contract_address: null
       tokens_to_rebalance: null
       target_percentages: null
       variation_threshold: null
@@ -169,6 +172,66 @@ models:
       retries: 5
       url: https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest
     class_name: CoinMarketCapSpecs
+  thegraph_specs:
+    args:
+      api_id: thegraph
+      headers:
+        Accept: application/json
+        Content-Type: application/json
+      method: POST
+      parameters:
+        query: ''
+      response_type: dict
+      response_key: data
+      retries: 5
+      url: https://gateway.thegraph.com/api/{api-key}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV
+    class_name: TheGraphSpecs
+  arli_specs:
+    args:
+      api_id: arli
+      headers:
+        Content-Type: application/json
+        Authorization: null
+      method: POST
+      parameters:
+        model: Mistral-Nemo-12B-Instruct-2407
+        prompt: Given the house price of 1,000,000 euro in Munich for a flat, what
+          would be the price of it after 2 years?
+        repetition_penalty: 1.1
+        temperature: 0.7
+        top_p: 0.9
+        top_k: 40
+        max_tokens: 1024
+        stream: false
+      response_key: choices
+      response_type: list
+      retries: 5
+      url: https://api.arliai.com/v1/completions
+    class_name: ArliSpecs
+  openai_specs:
+    args:
+      api_id: openai
+      headers:
+        Content-Type: application/json
+        Authorization: null
+      method: POST
+      url: https://api.openai.com/v1/chat/completions
+      parameters:
+        model: gpt-4o-mini
+        messages:
+        - role: system
+          content: You are a helpful assistant.
+        - role: user
+          content: "Based on the following portfolio and market data:\n{market_summary}\n\
+            \nProvide a single swap recommendation as JSON with two fields:\n1. 'action':\
+            \ specify direction (WETH to USDC or USDC to WETH) and percentage to swap\
+            \ (1-10%)\n2. 'reason': brief explanation in 10 words or less\n\nResponse\
+            \ format example:\n{\n  \"action\": \"swap 3% of weth to usdc\",\n  \"\
+            reason\": \"decreasing volume suggests potential price decline\"\n}\n"
+      response_type: dict
+      response_key: choices
+      retries: 5
+    class_name: OpenAISpecs
   requests:
     args: {}
     class_name: Requests

@@ -26,11 +26,15 @@ from packages.valory.skills.abstract_round_abci.models import Requests as BaseRe
 from packages.valory.skills.abstract_round_abci.tests.data.dummy_abci.models import (
     RandomnessApi as BaseRandomnessApi,
 )
+
 from packages.valory.skills.learning_abci.models import (
-    CoingeckoSpecs as BaseCoingeckoSpecs,
-)
-from packages.valory.skills.learning_abci.models import (
+    TheGraphSpecs as BaseTheGraphSpecs,
+    ArliSpecs as BaseArliSpecs,
     CoinMarketCapSpecs as BaseCoinMarketCapSpecs,
+    CoingeckoSpecs as BaseCoingeckoSpecs,
+    OpenAISpecs as BaseOpenAISpecs
+
+
 )
 from packages.valory.skills.learning_abci.models import Params as LearningParams
 from packages.valory.skills.learning_abci.models import SharedState as BaseSharedState
@@ -86,3 +90,11 @@ class CoingeckoSpecs(BaseCoingeckoSpecs):
 class CoinMarketCapSpecs(BaseCoinMarketCapSpecs):
     """A model that wraps ApiSpecs for CoinMarketCap API."""
 
+class TheGraphSpecs(BaseTheGraphSpecs):
+    """A model that wraps ApiSpecs for TheGraph API."""
+
+class ArliSpecs(BaseArliSpecs):
+    """A model that wraps ApiSpecs for Arli API."""
+
+class OpenAISpecs(BaseOpenAISpecs):
+    """A model that wraps ApiSpecs for OpenAI API."""   

@@ -79,6 +79,7 @@ class SynchronizedData(BaseSynchronizedData):
         """Get the total portfolio value."""
         return self.db.get("total_portfolio_value", None)
 
+
     @property
     def adjustment_balances(self) -> Optional[str]:
         """Get the total adjsutment balances."""

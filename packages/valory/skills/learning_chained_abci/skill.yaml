@@ -12,7 +12,7 @@ fingerprint:
   dialogues.py: bafybeiakqfqcpg7yrxt4bsyernhy5p77tci4qhmgqqjqi3ttx7zk6sklca
   fsm_specification.yaml: bafybeibhguliurgppqgues6zhy3e3pioacgapilid7j26u4pmfsump5ape
   handlers.py: bafybeicru4lanvektcppxpecul4zwjfuaxseopxtsxrfzmbfaz5qk4m67q
-  models.py: bafybeifngkdufuirzkicugfvnkr24gek5mls7hvq4dwexgo5nhsdxqwicm
+  models.py: bafybeiegzfptq5ytvzbgrqdqrlcxepefljttlxdbxgrmiqc46irqdcuo3i
 fingerprint_ignore_patterns: []
 connections: []
 contracts: []
@@ -22,7 +22,7 @@ skills:
 - valory/registration_abci:0.1.0:bafybeicnth5q4httefsusywx3zrrq4al47owvge72dqf2fziruicq6hqta
 - valory/reset_pause_abci:0.1.0:bafybeievjciqdvxhqxfjd4whqs27h6qbxqzrae7wwj7fpvxlvmtw3x35im
 - valory/termination_abci:0.1.0:bafybeid54buqxipiuduw7b6nnliiwsxajnltseuroad53wukfonpxca2om
-- valory/learning_abci:0.1.0:bafybeicwt4u4sphhf2eg5uksjyhl2juevandg3a6bzebys5qo2qhm6h364
+- valory/learning_abci:0.1.0:bafybeib5uc22ol2srj3jkbgt6cpl7ze3avax4dpdqrfgxjtqyv3t7zorti
 - valory/transaction_settlement_abci:0.1.0:bafybeihq2yenstblmaadzcjousowj5kfn5l7ns5pxweq2gcrsczfyq5wzm
 behaviours:
   main:
@@ -142,6 +142,7 @@ models:
       portfolio_address: null
       api_selection: null
       mock_contract_address: null
+      portfolio_manager_contract_address: null
       tokens_to_rebalance: null
       target_percentages: null
       variation_threshold: null
@@ -176,6 +177,20 @@ models:
       retries: 5
       url: https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest
     class_name: CoinMarketCapSpecs
+  thegraph_specs:
+    args:
+      api_id: thegraph
+      headers:
+        Accept: application/json
+        Content-Type: application/json
+      method: POST
+      parameters:
+        query: ''
+      response_type: dict
+      response_key: data
+      retries: 5
+      url: https://gateway.thegraph.com/api/{api-key}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV
+    class_name: TheGraphSpecs
   randomness_api:
     args:
       api_id: cloudflare
@@ -187,6 +202,53 @@ models:
       retries: 5
       url: https://drand.cloudflare.com/public/latest
     class_name: RandomnessApi
+  arli_specs:
+    args:
+      api_id: arli
+      headers:
+        Content-Type: application/json
+        Authorization: null
+      method: POST
+      parameters:
+        model: Qwen2.5-32B-Instruct
+        prompt: 'Given the following real estate data, provide an opinion on the potential
+          future price of a house in a growing suburban area with increasing property
+          demand and new infrastructure: [real estate data].'
+        repetition_penalty: 1.1
+        temperature: 0.7
+        top_p: 0.9
+        top_k: 40
+        max_tokens: 1024
+        stream: false
+      response_key: choices
+      response_type: list
+      retries: 5
+      url: https://api.arliai.com/v1/completions
+    class_name: ArliSpecs
+  openai_specs:
+    args:
+      api_id: openai
+      headers:
+        Content-Type: application/json
+        Authorization: null
+      method: POST
+      url: https://api.openai.com/v1/chat/completions
+      parameters:
+        model: gpt-4o-mini
+        messages:
+        - role: system
+          content: You are a helpful assistant.
+        - role: user
+          content: "Based on the following portfolio and market data:\n{market_summary}\n\
+            \nProvide a single swap recommendation as JSON with two fields:\n1. 'action':\
+            \ specify direction (WETH to USDC or USDC to WETH) and percentage to swap\
+            \ (1-10%)\n2. 'reason': brief explanation in 10 words or less\n\nResponse\
+            \ format example:\n{\n  \"action\": \"swap 3% of weth to usdc\",\n  \"\
+            reason\": \"decreasing volume suggests potential price decline\"\n}\n"
+      response_type: dict
+      response_key: choices
+      retries: 5
+    class_name: OpenAISpecs
   requests:
     args: {}
     class_name: Requests

@@ -390,6 +390,59 @@ class AlternativeDataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=to
             self.context.logger.info(f"Token values: {token_values}")
             self.context.logger.info(f"Total portfolio value: {total_portfolio_value}")
 
+            token_data = yield from self.get_uniswap_token_price_specs()
+
+            # Calculate current portfolio percentages
+            weth_percentage = (token_values.get("WETH", 0) / total_portfolio_value) * 100
+            usdc_percentage = (token_values.get("USDC", 0) / total_portfolio_value) * 100
+
+            # Get the most recent data point (index 0) for both tokens
+            weth_latest = token_data["WETH"][0]
+            weth_yesterday = token_data["WETH"][1]
+            usdc_latest = token_data["USDC"][0]
+            usdc_yesterday = token_data["USDC"][1]
+
+            # Create concise market summary
+            market_summary = {
+                "portfolio": {
+                    "total_value": f"${total_portfolio_value:,.2f}",
+                    "weth_percentage": f"{weth_percentage:.2f}%",
+                    "usdc_percentage": f"{usdc_percentage:.2f}%"
+                },
+                "market_data": {
+                    "weth": {
+                        "current_price": f"${float(weth_latest['priceUSD']):.2f}",
+                        "price_change": f"{((float(weth_latest['priceUSD']) - float(weth_yesterday['priceUSD'])) / float(weth_yesterday['priceUSD']) * 100):.2f}%",
+                        "24h_volume": f"${float(weth_latest['volumeUSD']):,.2f}",
+                        "volume_change": f"{((float(weth_latest['volumeUSD']) - float(weth_yesterday['volumeUSD'])) / float(weth_yesterday['volumeUSD']) * 100):.2f}%"
+                    }
+                }
+            }
+            # Format market summary as string for prompt
+            market_summary_str = json.dumps(market_summary, indent=2)
+
+            # Construct prompt using market data
+            prompt = f"""Based on the following portfolio and market data:
+                {market_summary_str}
+
+                Provide a single swap recommendation as JSON with two fields:
+                1. 'action': specify direction (WETH to USDC or USDC to WETH) and percentage to swap (1-10%)
+                2. 'reason': brief explanation in 10 words or less
+
+                Response format example:
+                {{
+                    "action": "swap 3% of weth to usdc",
+                    "reason": "decreasing volume suggests potential price decline"
+            }}"""
+
+            # Log LLM prompt
+            self.context.logger.info(f"Generated LLM Prompt:\n{prompt}")
+
+            # Send prompt to OpenAI API using get_llm_response
+            rebalance_decision = yield from self.get_llm_response(prompt)
+
+            # Log the AI's rebalance decision
+            self.context.logger.info(f"OpenAI Response: {rebalance_decision}")
 
             # Convert token values to JSON, dict is not hashable causing problems
             token_values_json = json.dumps(token_values, sort_keys=True) if token_values else None
@@ -431,6 +484,91 @@ class AlternativeDataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=to
         self.context.logger.info(f"Got token price from CoinMarketCap: {price}")
 
         return price
+
+    def get_uniswap_token_price_specs(self) -> Generator[None, None, Optional[str]]:
+        """Get token price from Uniswap V3 using The Graph API and ask LLM if portfolio should be rebalanced."""
+
+        # **Get the specs**
+        specs = self.thegraph_specs.get_spec()
+        # **GraphQL Query to Fetch Token Price Data**
+        graphql_query = """
+        {
+          USDC: tokenDayDatas(
+            where: { token: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" }
+            orderBy: date
+            orderDirection: desc
+            first: 7
+          ) {
+            date
+            priceUSD
+            volumeUSD
+            feesUSD
+          }
+          WETH: tokenDayDatas(
+            where: { token: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" }
+            orderBy: date
+            orderDirection: desc
+            first: 7
+          ) {
+            date
+            priceUSD
+            volumeUSD
+            feesUSD
+          }
+        }
+        """
+
+        # **Prepare API request parameters**
+        specs["parameters"]["query"] = graphql_query
+        specs["parameters"]["operationName"] = "Subgraphs"
+        specs["parameters"]["variables"] = {}
+
+        # **Prepare JSON payload**
+        content = json.dumps(specs["parameters"]).encode("utf-8")
+
+        # # **Log full request details**
+        # self.context.logger.info(f"API Specs being used: {specs}")
+        # self.context.logger.info(f"Payload being sent: {json.dumps(specs['parameters'], indent=2)}")
+        # self.context.logger.info(f"Payload being sent as content: {content.decode('utf-8')}")
+
+        try:
+            # **✅ Fetch token data from Uniswap V3**
+            raw_response = yield from self.get_http_response(
+                method="POST",
+                url=specs["url"],
+                content=content,
+                headers=specs["headers"]
+            )
+
+            # **Check if raw_response is an instance of HttpMessage**
+            if isinstance(raw_response, dict) and "body" in raw_response:
+                response_body = raw_response["body"]
+            elif hasattr(raw_response, "body"):
+                response_body = raw_response.body
+            else:
+                self.context.logger.error(f"Unexpected response format: {raw_response}")
+                return None
+
+            # **Ensure response body is in JSON format**
+            try:
+                json_response = json.loads(response_body.decode("utf-8"))
+            except json.JSONDecodeError as e:
+                self.context.logger.error(f"Error decoding JSON response: {str(e)}")
+                return None
+
+            # **Log the actual JSON response**
+            self.context.logger.info(f"Processed Response from Uniswap V3 API: {json.dumps(json_response, indent=2)}")
+
+            # Return the complete data structure
+            if "data" not in json_response:
+                self.context.logger.error("No data field in response")
+                return None
+
+            return json_response["data"]
+
+        except Exception as e:
+            self.context.logger.error(f"Error fetching price for token {token_address}: {str(e)}")
+            return None
 
     def get_token_balances(self) -> Generator[None, None, Optional[Dict[str, float]]]:
         """
@@ -567,115 +705,6 @@ class AlternativeDataPullBehaviour(LearningBaseBehaviour):  # pylint: disable=to
         # Return token values and total portfolio value
         return token_values, total_portfolio_value
 
-class DecisionMakingBehaviour(
-    LearningBaseBehaviour
-):  # pylint: disable=too-many-ancestors
-    """DecisionMakingBehaviour"""
-
-    matching_round: Type[AbstractRound] = DecisionMakingRound
-
-    def async_act(self) -> Generator:
-        """Do the act, supporting asynchronous execution."""
-
-        with self.context.benchmark_tool.measure(self.behaviour_id).local():
-            sender = self.context.agent_address
-
-            # Make a decision: either transact or not
-            event,adjustment_balances = yield from self.get_next_event()
-
-            payload = DecisionMakingPayload(sender=sender, event=event, adjustment_balances=adjustment_balances)
-
-        with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
-            yield from self.send_a2a_transaction(payload)
-            yield from self.wait_until_round_end()
-
-        self.set_done()
-
-    def get_uniswap_token_price_specs(self) -> Generator[None, None, Optional[str]]:
-        """Get token price from Uniswap V3 using The Graph API and ask LLM if portfolio should be rebalanced."""
-
-        # **Get the specs**
-        specs = self.thegraph_specs.get_spec()
-        # **GraphQL Query to Fetch Token Price Data**
-        graphql_query = """
-        {
-          USDC: tokenDayDatas(
-            where: { token: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" }
-            orderBy: date
-            orderDirection: desc
-            first: 7
-          ) {
-            date
-            priceUSD
-            volumeUSD
-            feesUSD
-          }
-          WETH: tokenDayDatas(
-            where: { token: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" }
-            orderBy: date
-            orderDirection: desc
-            first: 7
-          ) {
-            date
-            priceUSD
-            volumeUSD
-            feesUSD
-          }
-        }
-        """
-
-        # **Prepare API request parameters**
-        specs["parameters"]["query"] = graphql_query
-        specs["parameters"]["operationName"] = "Subgraphs"
-        specs["parameters"]["variables"] = {}
-
-        # **Prepare JSON payload**
-        content = json.dumps(specs["parameters"]).encode("utf-8")
-
-        # # **Log full request details**
-        # self.context.logger.info(f"API Specs being used: {specs}")
-        # self.context.logger.info(f"Payload being sent: {json.dumps(specs['parameters'], indent=2)}")
-        # self.context.logger.info(f"Payload being sent as content: {content.decode('utf-8')}")
-
-        try:
-            # **✅ Fetch token data from Uniswap V3**
-            raw_response = yield from self.get_http_response(
-                method="POST",
-                url=specs["url"],
-                content=content,
-                headers=specs["headers"]
-            )
-
-            # **Check if raw_response is an instance of HttpMessage**
-            if isinstance(raw_response, dict) and "body" in raw_response:
-                response_body = raw_response["body"]
-            elif hasattr(raw_response, "body"):
-                response_body = raw_response.body
-            else:
-                self.context.logger.error(f"Unexpected response format: {raw_response}")
-                return None
-
-            # **Ensure response body is in JSON format**
-            try:
-                json_response = json.loads(response_body.decode("utf-8"))
-            except json.JSONDecodeError as e:
-                self.context.logger.error(f"Error decoding JSON response: {str(e)}")
-                return None
-
-            # **Log the actual JSON response**
-            self.context.logger.info(f"Processed Response from Uniswap V3 API: {json.dumps(json_response, indent=2)}")
-
-            # Return the complete data structure
-            if "data" not in json_response:
-                self.context.logger.error("No data field in response")
-                return None
-
-            return json_response["data"]
-
-        except Exception as e:
-            self.context.logger.error(f"Error fetching price for token {token_address}: {str(e)}")
-            return None
-
     def get_llm_response(self, prompt: str) -> Generator[None, None, Optional[dict]]:
         """Get response from OpenAI API using ApiSpecs and return parsed JSON."""
         
@@ -719,6 +748,29 @@ class DecisionMakingBehaviour(
             self.context.logger.error(f"Error parsing OpenAI response: {e}")
             return None
 
+class DecisionMakingBehaviour(
+    LearningBaseBehaviour
+):  # pylint: disable=too-many-ancestors
+    """DecisionMakingBehaviour"""
+
+    matching_round: Type[AbstractRound] = DecisionMakingRound
+
+    def async_act(self) -> Generator:
+        """Do the act, supporting asynchronous execution."""
+
+        with self.context.benchmark_tool.measure(self.behaviour_id).local():
+            sender = self.context.agent_address
+
+            # Make a decision: either transact or not
+            event,adjustment_balances = yield from self.get_next_event()
+
+            payload = DecisionMakingPayload(sender=sender, event=event, adjustment_balances=adjustment_balances)
+
+        with self.context.benchmark_tool.measure(self.behaviour_id).consensus():
+            yield from self.send_a2a_transaction(payload)
+            yield from self.wait_until_round_end()
+
+        self.set_done()
 
     def get_next_event(self) -> Generator[None, None, Optional[Tuple[str,Dict[str, float]] ]]:
         """Get the next event: decide whether ot transact or not based on some data."""
@@ -737,8 +789,6 @@ class DecisionMakingBehaviour(
 
         rebalancing_actions_json = json.dumps(rebalancing_actions, sort_keys=True) if rebalancing_actions else None
         return Event.TRANSACT.value, rebalancing_actions_json
-
-
 
         # Call the ledger connection (equivalent to web3.py)
         ledger_api_response = yield from self.get_ledger_api_response(
@@ -763,11 +813,11 @@ class DecisionMakingBehaviour(
 
         return block_number
     
-    def calculate_rebalancing_actions(self) -> Generator[None, None, Optional[Dict[str, str]]]:
-        """
+    def calculate_rebalancing_actions(self) -> Generator[None, None, Union[bool,Dict[str, float],Dict[str, float],float]]:
+        """, Optional[
         Calculate rebalancing actions based on current and target percentages.
 
-        :return: Dictionary containing action and reason for rebalancing, or None if calculation fails.
+        :return: Dictionary with tokens as keys and new target token amounts as values.
         """
         # Start of method logging
         self.context.logger.info("Starting rebalancing calculation...")
@@ -787,7 +837,7 @@ class DecisionMakingBehaviour(
                 token_values = {}
         else:
             self.context.logger.warning("Token values JSON is None. No tokens to rebalance.")
-            return None
+            
 
         # Retrieve and check total portfolio value
         total_portfolio_value = self.synchronized_data.total_portfolio_value
@@ -795,61 +845,72 @@ class DecisionMakingBehaviour(
             self.context.logger.error("Total portfolio value is None or zero; cannot calculate rebalancing.")
             return None
 
-        token_data = yield from self.get_uniswap_token_price_specs()
+        # Log other parameters
+        target_percentages = self.params.target_percentages
+        tokens_to_rebalance = self.params.tokens_to_rebalance
+        variation_threshold = self.params.variation_threshold
 
-        # Calculate current portfolio percentages
-        weth_percentage = (token_values.get("WETH", 0) / total_portfolio_value) * 100
-        usdc_percentage = (token_values.get("USDC", 0) / total_portfolio_value) * 100
+        self.context.logger.info(f"Total portfolio value: {total_portfolio_value}")
+        self.context.logger.info(f"Target percentages: {target_percentages}")
+        self.context.logger.info(f"Tokens to rebalance: {tokens_to_rebalance}")
+        self.context.logger.info(f"Variation threshold: {variation_threshold}")
 
-        # Get the most recent data point (index 0) for both tokens
-        weth_latest = token_data["WETH"][0]
-        weth_yesterday = token_data["WETH"][1]
-        usdc_latest = token_data["USDC"][0]
-        usdc_yesterday = token_data["USDC"][1]
+        # Initialize dictionary to store the new target token amounts for each token
+        new_token_amounts = {}
+        isRebalanceNeeded = False
 
-        # Create concise market summary
-        market_summary = {
-            "portfolio": {
-                "total_value": f"${total_portfolio_value:,.2f}",
-                "weth_percentage": f"{weth_percentage:.2f}%",
-                "usdc_percentage": f"{usdc_percentage:.2f}%"
-            },
-            "market_data": {
-                "weth": {
-                    "current_price": f"${float(weth_latest['priceUSD']):.2f}",
-                    "price_change": f"{((float(weth_latest['priceUSD']) - float(weth_yesterday['priceUSD'])) / float(weth_yesterday['priceUSD']) * 100):.2f}%",
-                    "24h_volume": f"${float(weth_latest['volumeUSD']):,.2f}",
-                    "volume_change": f"{((float(weth_latest['volumeUSD']) - float(weth_yesterday['volumeUSD'])) / float(weth_yesterday['volumeUSD']) * 100):.2f}%"
-                }
-            }
-        }
-        # Format market summary as string for prompt
-        market_summary_str = json.dumps(market_summary, indent=2)
+        # Step 1: Calculate current and target values for each token
+        for i, token in enumerate(tokens_to_rebalance):
+            self.context.logger.info(f"Processing token: {token}")
 
-        # Construct prompt using market data
-        prompt = f"""Based on the following portfolio and market data:
-            {market_summary_str}
+            # Retrieve current value in USD
+            current_value = token_values.get(token, 0)
+            target_percentage = target_percentages[i]
 
-            Provide a single swap recommendation as JSON with two fields:
-            1. 'action': specify direction (WETH to USDC or USDC to WETH) and percentage to swap (1-10%)
-            2. 'reason': brief explanation in 10 words or less
+            # Retrieve the token price
+            self.context.logger.info(f"Fetching price for {token}...")
+            token_price = yield from self.get_token_price_specs(token)
+            if token_price is None:
+                self.context.logger.error(f"Could not retrieve price for {token}")
+                continue
 
-            Response format example:
-            {{
-                "action": "swap 3% of weth to usdc",
-                "reason": "decreasing volume suggests potential price decline"
-        }}"""
+            # Calculate the current token amount by dividing USD value by token price
+            current_token_amount = current_value / token_price
+            current_percentage = (current_value / total_portfolio_value) * 100
 
-        # Log LLM prompt
-        self.context.logger.info(f"Generated LLM Prompt:\n{prompt}")
+            # Calculate target value in USD and target token amount
+            target_value = (target_percentage / 100) * total_portfolio_value
+            target_token_amount = target_value / token_price
 
-        # Send prompt to OpenAI API using get_llm_response
-        rebalance_decision = yield from self.get_llm_response(prompt)
+            # Log current and target values in USD and as percentages
+            self.context.logger.info(
+                f"{token}: current amount = {current_token_amount:.4f}, current value in USD = {current_value:.2f}, "
+                f"current % of portfolio = {current_percentage:.2f}%, target value in USD = {target_value:.2f}"
+            )
 
-        # Log the AI's rebalance decision
-        self.context.logger.info(f"OpenAI Response: {rebalance_decision}")
+            # Calculate deviation based on the difference between current and target percentage
+            deviation = current_percentage - target_percentage
 
-        return rebalance_decision
+            # Check if deviation exceeds threshold and store new target token amount if needed
+            if abs(deviation) > variation_threshold:
+                new_token_amounts[token] = target_token_amount
+
+                # Log the required adjustment
+                action = "increase" if target_token_amount > current_token_amount else "decrease"
+                self.context.logger.info(
+                    f"{token}: To rebalance, {action} to reach target of {target_token_amount:.4f} tokens "
+                    f"(deviation: {deviation:.2f}% in USD balance)"
+                )
+                isRebalanceNeeded = True
+                self.context.logger.info(f"Completed rebalancing calculation. New target token amounts: {new_token_amounts}")
+            else:
+                self.context.logger.info(
+                    f"{token} is within the threshold ({variation_threshold}% deviation in percentage) and requires no rebalancing."
+                )
+
+        
+
+        return isRebalanceNeeded, new_token_amounts, token_values, total_portfolio_value
 
     def get_token_price_specs(self, symbol) -> Generator[None, None, Optional[float]]:
                 """Get token price from Coingecko using ApiSpecs"""
@@ -917,6 +978,8 @@ class DecisionMakingBehaviour(
 
         return report_ipfs_hash
 
+
+
 class TxPreparationBehaviour(
     LearningBaseBehaviour
 ):  # pylint: disable=too-many-ancestors
@@ -931,61 +994,11 @@ class TxPreparationBehaviour(
             sender = self.context.agent_address
 
             adjustment_balances_json = self.synchronized_data.adjustment_balances
-            self.context.logger.info(f"Adjustment balances JSON retrieved: {adjustment_balances_json}")
+            # self.context.logger.info(f"Token values JSON retrieved: {adjustment_balances_json}")            
 
-            # Get current token balances
-            token_balances = yield from self.get_token_balances()
-            if token_balances is None:
-                self.context.logger.error("Failed to retrieve token balances.")
-                return None
 
-            # Log current token balances
-            self.context.logger.info("Current token balances:")
-            for token, balance in token_balances.items():
-                self.context.logger.info(f"{token}: {balance}")
-
-            # Parse adjustment action
-            if adjustment_balances_json:
-                adjustment_dict = json.loads(adjustment_balances_json)
-                action = adjustment_dict.get('action', '')
-                
-                # Extract percentage and tokens from action string
-                # Example: "swap 5% of weth to usdc"
-                parts = action.split()
-                try:
-                    percentage = float(parts[1].replace('%', ''))
-                    source_token = parts[3].upper() # Token after "of"
-                    target_token = parts[5].upper() # Token after "to"
-                    
-                    # Calculate amount to swap based on percentage of source token balance
-                    source_balance = token_balances.get(source_token)
-                    if source_balance is None:
-                        self.context.logger.error(f"No balance found for {source_token}")
-                        return None
-                        
-                    amount_to_swap = source_balance * (percentage / 100)
-                    
-                    self.context.logger.info(f"Calculated swap amount:")
-                    self.context.logger.info(f"Source token: {source_token}")
-                    self.context.logger.info(f"Target token: {target_token}")
-                    self.context.logger.info(f"Amount to swap: {amount_to_swap}")
-
-                    # Create payload with source token, target token and amount
-                    # Parse the swap payload
-                    adjustment_balances = {
-                        "source_token": source_token,
-                        "target_token": target_token,
-                        "amount": amount_to_swap,
-                        "action": action,
-                        "reason": "Rebalancing portfolio based on target allocation"
-                    }
-
-                except (IndexError, ValueError) as e:
-                    self.context.logger.error(f"Failed to parse adjustment action: {e}")
-                    return None
-
-                # Get the transaction hash using the adjustment balances
-                tx_hash = yield from self.generate_multisend_transactions(json.dumps(adjustment_balances))
+            # Get the transaction hash
+            tx_hash = yield from self.generate_multisend_transactions(adjustment_balances_json)
 
             payload = TxPreparationPayload(
                 sender=sender, tx_submitter=self.auto_behaviour_id(), tx_hash=tx_hash
@@ -997,139 +1010,44 @@ class TxPreparationBehaviour(
 
         self.set_done()
 
-     
-    def get_token_balances(self) -> Generator[None, None, Optional[Dict[str, float]]]:
+    def get_adjust_balance_data(self, user: str, token: str, new_balance: int) -> Generator[None, None, Dict]:
         """
-        Get balances for each specified token from the deployed contract using parameters from self.params.
+        Get the minimal transaction data for adjusting balance in the MOCKDEX contract.
 
-        :return: Dictionary of token balances, or None if an error occurs.
+        :param user: Address of the user.
+        :param token: Token name.
+        :param new_balance: New balance to set.
+        :return: Dictionary with minimal transaction data.
         """
-        self.context.logger.info("Starting to fetch token balances for the portfolio.")
-
-        # Retrieve portfolio address and tokens to rebalance from params
-        portfolio_address = self.params.portfolio_address_string
-        portfolio_manager_contract_address = self.params.portfolio_manager_contract_address_string
-
-        # Use default token addresses and their decimals
-        tokens_to_rebalance = {
-            "USDC": {"address": USDC_ADDRESS, "decimals": 6},
-            "WETH": {"address": WETH_ADDRESS, "decimals": 18}
-        }
-
-        # Log the portfolio details and tokens
-        self.context.logger.info(f"Portfolio Address: {portfolio_address}")
-        self.context.logger.info(f"Portfolio Manager Contract: {portfolio_manager_contract_address}")
-        self.context.logger.info(f"Tokens to Rebalance: {tokens_to_rebalance}")
-
-        # Prepare list of token addresses in the same order as the symbols
-        token_addresses = [token_info["address"] for token_info in tokens_to_rebalance.values()]
-        token_symbols = list(tokens_to_rebalance.keys())
-
-        # Call the contract API to get all token balances at once
-        response_msg = yield from self.get_contract_api_response(
-            performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,  # type: ignore
-            contract_address=portfolio_manager_contract_address,
-            contract_id=str(PORTFOLIOMANAGER.contract_id),
-            contract_callable="get_user_balances",
-            user=portfolio_address,
-            tokens=token_addresses,
-            chain_id=ETHEREUM_CHAIN_ID,
-        )
-
-        # Check if the response contains the expected balance data
-        if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
-            self.context.logger.error(f"Error retrieving balances: {response_msg}")
-            return None
-
-        # Extract balances from the response
-        balances_list = response_msg.raw_transaction.body.get("balances", None)
-        if balances_list is None:
-            self.context.logger.error("No balance data returned")
-            return None
-
-        # Create dictionary mapping token symbols to their balances
-        balances = {}
-        for i, (symbol, balance) in enumerate(zip(token_symbols, balances_list)):
-            if balance is not None:
-                # Convert the balance using the correct number of decimals for each token
-                decimals = tokens_to_rebalance[symbol]["decimals"]
-                readable_balance = float(balance) / (10 ** decimals)
-                balances[symbol] = readable_balance
-                self.context.logger.info(f"Balance for {symbol} (in readable format): {readable_balance}")
-            else:
-                self.context.logger.error(f"No balance data returned for {symbol}")
-                balances[symbol] = None
-
-        # Final printout of all token balances
-        self.context.logger.info("Completed fetching balances for all tokens.")
-        for token, balance in balances.items():
-            if balance is not None:
-                self.context.logger.info(f"Final balance for {token}: {balance}")
-            else:
-                self.context.logger.info(f"Balance for {token} could not be retrieved.")
-
-        return balances if balances else None
-    
-    def get_adjust_balance_data(self, user: str, source_token: str, amount_to_swap: float, target_token: str) -> Generator[None, None, Dict]:
-        """
-        Get the transaction data for executing a rebalance through the PortfolioManager contract.
-
-        :param user: Address of the user's portfolio
-        :param source_token: Token to sell
-        :param amount_to_swap: Amount of source token to swap
-        :param target_token: Token to buy
-        :return: Dictionary with transaction data
-        """
-        # Get contract addresses
-        portfolio_manager_address = self.params.portfolio_manager_contract_address_string
+        # Get the multisig address from parameters
         safe_address = self.params.safe_address
+        mock_contract_address = self.params.mock_contract_address_string
 
-        # Define token addresses
-        token_addresses = {
-            "USDC": USDC_ADDRESS,
-            "WETH": WETH_ADDRESS
-        }
+        # Log the values of the important parameters
+        self.context.logger.info(f"Using safe address: {safe_address}")
+        self.context.logger.info(f"Mock contract address (MOCKDEX): {mock_contract_address}")
+        self.context.logger.info(f"User address: {user}")
+        self.context.logger.info(f"Token: {token}")
+        self.context.logger.info(f"New balance: {new_balance}")
+        self.context.logger.info(f"Chain ID: {ETHEREUM_CHAIN_ID}")
 
-        # Define token decimals
-        token_decimals = {
-            "USDC": 6,
-            "WETH": 18
-        }
-
-        # Convert human readable amount to token units with proper decimals
-        source_decimals = token_decimals[source_token]
-        amount_in_wei = int(amount_to_swap * (10 ** source_decimals))
-
-        # Construct swap parameters
-        swap_params = [{
-            "tokenToSell": token_addresses[source_token],
-            "tokenToBuy": token_addresses[target_token],
-            "amountToSell": amount_in_wei,
-            "amountOutMin": 0,  # Consider implementing slippage protection
-            "poolFee": 3000  # Standard Uniswap v3 pool fee (0.3%)
-        }]
-
-        # Log the transaction parameters
-        self.context.logger.info(f"Preparing executeRebalance transaction:")
-        self.context.logger.info(f"Portfolio Manager: {portfolio_manager_address}")
-        self.context.logger.info(f"User: {user}")
-        self.context.logger.info(f"Swap params: {swap_params}")
-
-        # Get the transaction data for executeRebalance
+        # Prepare transaction data by calling `adjustBalance` on MOCKDEX contract
         response_msg = yield from self.get_contract_api_response(
             performative=ContractApiMessage.Performative.GET_RAW_TRANSACTION,
-            contract_address=portfolio_manager_address,
-            contract_id=str(PORTFOLIOMANAGER.contract_id),
-            contract_callable="execute_rebalance",
+            contract_address=mock_contract_address,  # MOCKDEX contract address
+            contract_id=str(MOCKDEX.contract_id),
+            contract_callable="adjustBalance",
             user=user,
-            swaps=swap_params,
+            token=token,
+            new_balance=new_balance,
             chain_id=ETHEREUM_CHAIN_ID,
-            from_address=safe_address,
+            from_address=safe_address, 
+
         )
 
         # Check if transaction data was generated successfully
         if response_msg.performative != ContractApiMessage.Performative.RAW_TRANSACTION:
-            self.context.logger.error(f"Failed to prepare transaction data for executeRebalance: {response_msg}")
+            self.context.logger.error(f"Failed to prepare transaction data for adjustBalance: {response_msg}")
             return {}
 
         transaction_data_hex = response_msg.raw_transaction.body.get("data")
@@ -1137,15 +1055,17 @@ class TxPreparationBehaviour(
             self.context.logger.error("Transaction data is missing from response.")
             return {}
 
-        # Return transaction data
+        mock_contract_address = self.params.mock_contract_address_string
+
+        # Return minimal transaction data
         transaction_data = {
-            "to_address": portfolio_manager_address,
+            "to_address": mock_contract_address,  # MOCKDEX contract address
             "data": bytes.fromhex(transaction_data_hex[2:])  # Convert hex string to bytes without "0x"
         }
-        self.context.logger.info(f"Prepared executeRebalance transaction data: {transaction_data}")
+        self.context.logger.info(f"Prepared minimal adjust balance transaction data: {transaction_data}")
         
         return transaction_data
-    
+
     def generate_multisend_transactions(self, adjustment_balances_json: str) -> Generator[None, None, Optional[str]]:
         """Generate multisend transactions for each token adjustment balance."""
 
@@ -1153,30 +1073,27 @@ class TxPreparationBehaviour(
         multi_send_txs = []
         adjustment_balances = json.loads(adjustment_balances_json)
         portfolio_address = self.params.portfolio_address_string
-        
-        # Log the rebalancing action and reason
-        self.context.logger.info(f"Rebalancing action: {adjustment_balances['action']}")
-        self.context.logger.info(f"Rebalancing reason: {adjustment_balances['reason']}")
 
-        # Get balance adjustment transaction data
-        balance_adjustment_data = yield from self.get_adjust_balance_data(
-            user=portfolio_address,
-            source_token=adjustment_balances["source_token"],
-            amount_to_swap=adjustment_balances["amount"],
-            target_token=adjustment_balances["target_token"]
-        )
+        for token, target_balance in adjustment_balances.items():
+            self.context.logger.info(f"Preparing multisend transaction for {token} with target balance {target_balance}")
 
-        if not balance_adjustment_data:
-            self.context.logger.error("Failed to prepare balance adjustment transaction")
-            return None
+            # Step 1: Prepare the balance adjustment transaction data
+            balance_adjustment_data = yield from self.get_adjust_balance_data(
+                user=portfolio_address,
+                token=token,
+                new_balance=round(target_balance)
+            )
+            if not balance_adjustment_data:
+                self.context.logger.error(f"Failed to prepare balance adjustment transaction for {token}")
+                continue
 
-        multi_send_txs.append({
-            "operation": MultiSendOperation.CALL,
-            "to": balance_adjustment_data["to_address"],
-            "data": balance_adjustment_data["data"],
-            "value": ZERO_VALUE,
-        })
-        self.context.logger.info(f"Prepared balance adjustment data: {balance_adjustment_data}")
+            multi_send_txs.append({
+                "operation": MultiSendOperation.CALL,
+                "to": balance_adjustment_data["to_address"],
+                "data": balance_adjustment_data["data"],
+                "value": ZERO_VALUE,
+            })
+            self.context.logger.info(f"Prepared balance adjustment data for {token}: {balance_adjustment_data}")
 
 
         # Step 3: Pack the multisend transactions into a single call

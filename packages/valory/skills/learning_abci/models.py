@@ -53,6 +53,12 @@ class Params(BaseParams):
         self.coingecko_api_key = kwargs.get("coingecko_api_key", None)
         self.coinmarketcap_api_key = kwargs.get("coinmarketcap_api_key", None)
         
+        self.thegraph_api_key = kwargs.get("thegraph_api_key", None)
+        self.openai_api_key = kwargs.get("openai_api_key", None)
+
+        
+        self.arli_api_key = kwargs.get("arli_api_key", None)
+
         self.api_selection_string: str = self._ensure("api_selection", kwargs, str)
 
         self.transfer_target_address = self._ensure(
@@ -69,6 +75,7 @@ class Params(BaseParams):
         self.variation_threshold: float = self._ensure("variation_threshold", kwargs, float)
         self.portfolio_address_string: str = self._ensure("portfolio_address", kwargs, str)
         self.mock_contract_address_string: str = self._ensure("mock_contract_address", kwargs, str)
+        self.portfolio_manager_contract_address_string: str = self._ensure("portfolio_manager_contract_address", kwargs, str)
 
         
         #Neeed for from field while interacting with protected contract of MockTrade.
@@ -93,3 +100,12 @@ class CoingeckoSpecs(ApiSpecs):
 
 class CoinMarketCapSpecs(ApiSpecs):
     """A model that wraps ApiSpecs for CoinMarketCap API."""
+
+class TheGraphSpecs(ApiSpecs):
+    """A model that wraps ApiSpecs for TheGraph API."""
+
+class ArliSpecs(ApiSpecs):
+    """A model that wraps ApiSpecs for Coinmarketcap API."""
+
+class OpenAISpecs(ApiSpecs):
+    """A model that wraps ApiSpecs for Coinmarketcap API."""

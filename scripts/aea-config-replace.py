@@ -40,6 +40,11 @@ def main() -> None:
             config[2]["config"]["ledger_apis"]["gnosis"][
                 "address"
             ] = f"${{str:{os.getenv('GNOSIS_LEDGER_RPC')}}}"
+        
+        if os.getenv("ETHEREUM_LEDGER_RPC"):
+            config[2]["config"]["ledger_apis"]["ethereum"][
+                "address"
+            ] = f"${{str:{os.getenv('ETHEREUM_LEDGER_RPC')}}}"
 
         # Params
         if os.getenv("COINGECKO_API_KEY"):
@@ -57,6 +62,21 @@ def main() -> None:
             config[-1]["models"]["coinmarketcap_specs"]["args"]["parameters"][
                 "CMC_PRO_API_KEY"
             ] = f"${{str:{os.getenv('COINMARKETCAP_API_KEY')}}}"  # type: ignore
+
+            # Graph API key (ApiSpecs)
+            config[-1]["models"]["thegraph_specs"]["args"]["url"] = (
+                f"https://gateway.thegraph.com/api/{os.getenv('THEGRAPH_API_KEY', '')}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
+            )
+
+            # Arli AI API key (ApiSpecs)
+            config[-1]["models"]["arli_specs"]["args"]["headers"][
+                "Authorization"
+            ] = f"Bearer {os.getenv('ARLI_API_KEY')}"  # type: ignore
+
+            # OpenAI AI API key (ApiSpecs)
+            config[-1]["models"]["openai_specs"]["args"]["headers"][
+                "Authorization"
+            ] = f"Bearer {os.getenv('OPENAI_API_KEY')}"  # type: ignore
 
             # ALL_PARTICIPANTS
             config[-1]["models"]["params"]["args"]["setup"][
@@ -77,6 +97,11 @@ def main() -> None:
             config[-1]["models"]["params"]["args"][
                 "mock_contract_address"
             ] = f"${{str:{os.getenv('MOCK_CONTRACT_ADDRESS')}}}"  # type: ignore
+
+            # MOCK_CONTRACT_ADDRESS
+            config[-1]["models"]["params"]["args"][
+                "portfolio_manager_contract_address"
+            ] = f"${{str:{os.getenv('PORTFOLIO_MANAGER_CONTRACT_ADDRESS')}}}"  # type: ignore
 
             # PORTFOLIO_ADDRESS
             config[-1]["models"]["params"]["args"][

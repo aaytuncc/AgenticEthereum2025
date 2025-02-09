@@ -32,8 +32,8 @@ protocols:
 skills:
 - valory/abstract_abci:0.1.0:bafybeihu2bcgjk2tqjiq2zhk3uogtfszqn4osvdt7ho3fubdpdj4jgdfjm
 - valory/abstract_round_abci:0.1.0:bafybeibovsktd3uxur45nrcomq5shcn46cgxd5idmhxbmjhg32c5abyqim
-- valory/learning_abci:0.1.0:bafybeicwt4u4sphhf2eg5uksjyhl2juevandg3a6bzebys5qo2qhm6h364
-- valory/learning_chained_abci:0.1.0:bafybeibd4mxv3pyblf7bhbzkur73widond7dajl74e4y24ernqtoztaqba
+- valory/learning_abci:0.1.0:bafybeib5uc22ol2srj3jkbgt6cpl7ze3avax4dpdqrfgxjtqyv3t7zorti
+- valory/learning_chained_abci:0.1.0:bafybeielkmbqqluehjmnicckrxr3esrl7ou7jy5iqftpywbkbkklejdpzi
 - valory/registration_abci:0.1.0:bafybeicnth5q4httefsusywx3zrrq4al47owvge72dqf2fziruicq6hqta
 - valory/reset_pause_abci:0.1.0:bafybeievjciqdvxhqxfjd4whqs27h6qbxqzrae7wwj7fpvxlvmtw3x35im
 - valory/termination_abci:0.1.0:bafybeid54buqxipiuduw7b6nnliiwsxajnltseuroad53wukfonpxca2om
@@ -193,6 +193,7 @@ models:
       api_selection: ${str:null}
       portfolio_address: ${str:null}
       mock_contract_address: ${str:null}
+      portfolio_manager_contract_address: ${str:null}
       tokens_to_rebalance: ${list:[]}
       target_percentages: ${list:[]}
       variation_threshold: ${float:null}
@@ -224,3 +225,60 @@ models:
       response_key: data
       retries: 5
       url: https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest
+  thegraph_specs:
+    args:
+      api_id: thegraph
+      headers:
+        Accept: application/json
+        Content-Type: application/json
+      method: POST
+      parameters:
+        query: ${str:null}
+      response_type: dict
+      response_key: data
+      retries: 5
+      url: https://gateway.thegraph.com/api/${str:null}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV
+  arli_specs:
+    args:
+      api_id: arli
+      headers:
+        Content-Type: application/json
+        Authorization: ${str:null}
+      method: POST
+      parameters:
+        model: Qwen2.5-32B-Instruct
+        prompt: Given the house price of 1,000,000 euro in Munich for a flat, what
+          would be the price of it after 2 years?
+        repetition_penalty: 1.1
+        temperature: 0.7
+        top_p: 0.9
+        top_k: 40
+        max_tokens: 1024
+        stream: false
+      response_key: choices
+      response_type: list
+      retries: 5
+      url: https://api.arliai.com/v1/completions
+  openai_specs:
+    args:
+      api_id: openai
+      headers:
+        Content-Type: application/json
+        Authorization: null
+      method: POST
+      url: https://api.openai.com/v1/chat/completions
+      parameters:
+        model: gpt-4o-mini
+        messages:
+        - role: system
+          content: You are a helpful assistant.
+        - role: user
+          content: "Based on the following portfolio and market data:\n{market_summary}\n\
+            \nProvide a single swap recommendation as JSON with two fields:\n1. 'action':\
+            \ specify direction (WETH to USDC or USDC to WETH) and percentage to swap\
+            \ (1-10%)\n2. 'reason': brief explanation in 10 words or less\n\nResponse\
+            \ format example:\n{\n  \"action\": \"swap 3% of weth to usdc\",\n  \"\
+            reason\": \"decreasing volume suggests potential price decline\"\n}\n"
+      response_type: dict
+      response_key: choices
+      retries: 5
